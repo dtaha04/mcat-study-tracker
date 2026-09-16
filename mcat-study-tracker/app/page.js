@@ -104,7 +104,58 @@ export default function Home(){
 
   async function seed(){
     const uid=session.user.id
-    const {count}=await supabase.from('study_days').select('*',{count:'exact',head:true}).eq('user_id',uid)
+
+    // Detect old April 2027 schedule.
+    const {count:oldPlanCount,error:oldPlanError}=await supabase
+      .from('study_days')
+      .select('*',{count:'exact',head:true})
+      .eq('user_id',uid)
+      .gt('study_date','2027-01-29')
+
+    if(oldPlanError){
+      setMsg(oldPlanError.message)
+      return
+    }
+
+    // Remove ONLY old scheduled study days/tasks.
+    // Question logs, FL scores, and study sessions remain untouched.
+    if(oldPlanCount>0){
+      const {error:taskDeleteError}=await supabase
+        .from('daily_tasks')
+        .delete()
+        .eq('user_id',uid)
+        .gte('task_date','2026-09-16')
+
+      if(taskDeleteError){
+        setMsg(taskDeleteError.message)
+        return
+      }
+
+      const {error:dayDeleteError}=await supabase
+        .from('study_days')
+        .delete()
+        .eq('user_id',uid)
+        .gte('study_date','2026-09-16')
+
+      if(dayDeleteError){
+        setMsg(dayDeleteError.message)
+        return
+      }
+    }
+
+    // Don't seed twice.
+    const {count,error:countError}=await supabase
+      .from('study_days')
+      .select('*',{count:'exact',head:true})
+      .eq('user_id',uid)
+      .gte('study_date','2026-09-16')
+      .lte('study_date','2027-01-29')
+
+    if(countError){
+      setMsg(countError.message)
+      return
+    }
+
     if(count>0)return
 
     const dayRows=schedule.map(r=>({
@@ -116,10 +167,20 @@ export default function Home(){
       is_full_length_day:/full.?length|FL/i.test(r.assignment+' '+r.notes)
     }))
 
-    const {data:inserted,error}=await supabase.from('study_days').insert(dayRows).select()
-    if(error){setMsg(error.message);return}
+    const {data:inserted,error}=await supabase
+      .from('study_days')
+      .insert(dayRows)
+      .select()
 
-    const map=Object.fromEntries(inserted.map(d=>[d.study_date,d.id]))
+    if(error){
+      setMsg(error.message)
+      return
+    }
+
+    const map=Object.fromEntries(
+      inserted.map(d=>[d.study_date,d.id])
+    )
+
     let taskRows=[]
 
     schedule.forEach(r=>TASKS(r).forEach((t,i)=>taskRows.push({
@@ -130,12 +191,25 @@ export default function Home(){
       title:t.title,
       description:r.assignment,
       resource:t.resource,
-      estimated_minutes:Math.max(15,Math.round((r.hours*60)/TASKS(r).length)),
+      estimated_minutes:Math.max(
+        15,
+        Math.round((r.hours*60)/TASKS(r).length)
+      ),
       sort_order:i
     })))
 
-    for(let i=0;i<taskRows.length;i+=500)
-      await supabase.from('daily_tasks').insert(taskRows.slice(i,i+500))
+    for(let i=0;i<taskRows.length;i+=500){
+      const {error}=await supabase
+        .from('daily_tasks')
+        .insert(taskRows.slice(i,i+500))
+
+      if(error){
+        setMsg(error.message)
+        return
+      }
+    }
+
+    await loadAll()
   }
 
   async function loadAll(){
@@ -180,7 +254,11 @@ export default function Home(){
     e.preventDefault()
     const f=new FormData(e.currentTarget)
     const total=+f.get('total'),correct=+f.get('correct')
-    if(correct>total){setMsg('Correct answers cannot exceed total questions.');return}
+    if(correct>total){
+      setMsg('Correct answers cannot exceed total questions.')
+      return
+    }
+
     await supabase.from('question_blocks').insert({
       user_id:session.user.id,
       question_date:todayISO(),
@@ -190,6 +268,7 @@ export default function Home(){
       correct_questions:correct,
       timed:f.get('timed')==='on'
     })
+
     e.currentTarget.reset()
     loadAll()
   }
@@ -198,6 +277,7 @@ export default function Home(){
     e.preventDefault()
     const f=new FormData(e.currentTarget)
     const vals=['cp','cars','bb','ps'].map(k=>+f.get(k))
+
     await supabase.from('full_length_scores').insert({
       user_id:session.user.id,
       exam_date:f.get('date'),
@@ -208,30 +288,45 @@ export default function Home(){
       ps_score:vals[3],
       total_score:vals.reduce((a,b)=>a+b,0)
     })
+
     e.currentTarget.reset()
     loadAll()
   }
 
-  if(loading)return <main className="center"><div className="loader"/></main>
+  if(loading)
+    return <main className="center"><div className="loader"/></main>
 
-  if(!session)return <main className="auth">
-    <div className="authCard">
-      <div className="brand">
-        <span>λ</span>
-        <div><h1>MCAT Study Tracker</h1><p>Built for the long game.</p></div>
+  if(!session)
+    return <main className="auth">
+      <div className="authCard">
+        <div className="brand">
+          <span>λ</span>
+          <div>
+            <h1>MCAT Study Tracker</h1>
+            <p>Built for the long game.</p>
+          </div>
+        </div>
+
+        <h2>{authMode==='login'?'Welcome back':'Create your account'}</h2>
+
+        <form onSubmit={auth}>
+          <input name="email" type="email" placeholder="Email" required/>
+          <input name="password" type="password" placeholder="Password" minLength="6" required/>
+          <button>{authMode==='login'?'Sign in':'Create account'}</button>
+        </form>
+
+        {msg&&<p className="message">{msg}</p>}
+
+        <button
+          className="link"
+          onClick={()=>setAuthMode(authMode==='login'?'signup':'login')}
+        >
+          {authMode==='login'
+            ?'Need an account? Sign up'
+            :'Already have an account? Sign in'}
+        </button>
       </div>
-      <h2>{authMode==='login'?'Welcome back':'Create your account'}</h2>
-      <form onSubmit={auth}>
-        <input name="email" type="email" placeholder="Email" required/>
-        <input name="password" type="password" placeholder="Password" minLength="6" required/>
-        <button>{authMode==='login'?'Sign in':'Create account'}</button>
-      </form>
-      {msg&&<p className="message">{msg}</p>}
-      <button className="link" onClick={()=>setAuthMode(authMode==='login'?'signup':'login')}>
-        {authMode==='login'?'Need an account? Sign up':'Already have an account? Sign in'}
-      </button>
-    </div>
-  </main>
+    </main>
 
   const dayTasks=tasks.filter(t=>t.task_date===selected)
   const done=dayTasks.filter(t=>t.completed).length
@@ -242,7 +337,10 @@ export default function Home(){
   const totalCorrect=qlogs.reduce((a,q)=>a+q.correct_questions,0)
   const accuracy=totalQuestions?Math.round(totalCorrect/totalQuestions*100):0
 
-  const selectedPlannedMinutes=dayTasks.reduce((a,t)=>a+(t.estimated_minutes||0),0)
+  const selectedPlannedMinutes=dayTasks.reduce(
+    (a,t)=>a+(t.estimated_minutes||0),0
+  )
+
   const selectedActualMinutes=sessions
     .filter(x=>x.session_date===selected)
     .reduce((a,x)=>a+(x.actual_minutes||0),0)
@@ -260,7 +358,9 @@ export default function Home(){
 
   const weekTasks=tasks.filter(t=>weekDates.includes(t.task_date))
   const weekDone=weekTasks.filter(t=>t.completed).length
-  const weekPct=weekTasks.length?Math.round(weekDone/weekTasks.length*100):0
+  const weekPct=weekTasks.length
+    ?Math.round(weekDone/weekTasks.length*100)
+    :0
 
   const weekStudyMinutes=sessions
     .filter(x=>weekDates.includes(x.session_date))
@@ -272,32 +372,62 @@ export default function Home(){
 
   const m=String(Math.floor(seconds/60)).padStart(2,'0')
   const s=String(seconds%60).padStart(2,'0')
-  const timerTotal=(timerMode==='Focus'?focusMin:breakMin)*60
-  const timerPct=Math.max(0,Math.min(100,100-(seconds/timerTotal*100)))
 
-  const daysToMCAT=Math.max(0,Math.ceil((new Date('2027-04-17T12:00:00')-new Date())/86400000))
+  const timerTotal=(timerMode==='Focus'?focusMin:breakMin)*60
+  const timerPct=Math.max(
+    0,
+    Math.min(100,100-(seconds/timerTotal*100))
+  )
+
+  const daysToMCAT=Math.max(
+    0,
+    Math.ceil(
+      (
+        new Date('2027-01-29T12:00:00')-
+        new Date()
+      )/86400000
+    )
+  )
 
   return <main className="shell">
     <aside>
-      <div className="logo"><span className="lambda">λ</span><span>MCAT</span></div>
+      <div className="logo">
+        <span className="lambda">λ</span>
+        <span>MCAT</span>
+      </div>
+
       {['Today','Calendar','Questions','Full Lengths','Analytics'].map(x=>
-        <button key={x} className={tab===x?'active':''} onClick={()=>setTab(x)}>{x}</button>
+        <button
+          key={x}
+          className={tab===x?'active':''}
+          onClick={()=>setTab(x)}
+        >
+          {x}
+        </button>
       )}
+
       <div className="spacer"/>
+
       <div className="sideExam">
         <small>TEST DAY</small>
-        <b>APR 17</b>
+        <b>JAN 29</b>
         <span>2027</span>
       </div>
-      <button onClick={()=>supabase.auth.signOut()}>Sign out</button>
+
+      <button onClick={()=>supabase.auth.signOut()}>
+        Sign out
+      </button>
     </aside>
 
     <section className="content">
       <header>
         <div>
-          <p className="eyebrow">{planned?.phase||'MCAT PLAN'}</p>
+          <p className="eyebrow">
+            {planned?.phase||'MCAT PLAN'}
+          </p>
           <h1>{tab}</h1>
         </div>
+
         <div className="countdown">
           <b>{daysToMCAT}</b>
           <span>days to MCAT</span>
@@ -320,16 +450,22 @@ export default function Home(){
               <b>{hoursText(weekStudyMinutes)}</b>
               <small>focused this week</small>
             </div>
+
             <div>
               <span>TASKS</span>
-              <b>{weekDone}<em>/{weekTasks.length}</em></b>
+              <b>
+                {weekDone}
+                <em>/{weekTasks.length}</em>
+              </b>
               <small>completed</small>
             </div>
+
             <div>
               <span>QUESTIONS</span>
               <b>{weekQuestions}</b>
               <small>logged this week</small>
             </div>
+
             <div>
               <span>WEEK PROGRESS</span>
               <b>{weekPct}%</b>
@@ -341,16 +477,33 @@ export default function Home(){
             {weekDates.map(date=>{
               const dt=tasks.filter(t=>t.task_date===date)
               const dc=dt.filter(t=>t.completed).length
-              const dp=dt.length?Math.round(dc/dt.length*100):0
+              const dp=dt.length
+                ?Math.round(dc/dt.length*100)
+                :0
+
               const d=new Date(date+'T12:00:00')
+
               return <button
                 key={date}
-                className={(date===selected?'selected ':'')+(date===todayISO()?'current':'')}
+                className={
+                  (date===selected?'selected ':'')+
+                  (date===todayISO()?'current':'')
+                }
                 onClick={()=>setSelected(date)}
               >
-                <span>{d.toLocaleDateString('en-US',{weekday:'short'}).toUpperCase()}</span>
+                <span>
+                  {d.toLocaleDateString(
+                    'en-US',
+                    {weekday:'short'}
+                  ).toUpperCase()}
+                </span>
+
                 <b>{d.getDate()}</b>
-                <i><em style={{height:dp+'%'}}/></i>
+
+                <i>
+                  <em style={{height:dp+'%'}}/>
+                </i>
+
                 <small>{dp}%</small>
               </button>
             })}
@@ -359,14 +512,30 @@ export default function Home(){
 
         <div className="todayHeading">
           <div>
-            <p>{new Date(selected+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</p>
-            <h2>{planned?.assignment||'Study plan'}</h2>
+            <p>
+              {new Date(
+                selected+'T12:00:00'
+              ).toLocaleDateString(
+                'en-US',
+                {
+                  weekday:'long',
+                  month:'long',
+                  day:'numeric'
+                }
+              )}
+            </p>
+
+            <h2>
+              {planned?.assignment||'Study plan'}
+            </h2>
           </div>
+
           <div className="todayMetrics">
             <div>
               <span>PLANNED</span>
               <b>{hoursText(selectedPlannedMinutes)}</b>
             </div>
+
             <div>
               <span>FOCUSED</span>
               <b>{hoursText(selectedActualMinutes)}</b>
@@ -377,9 +546,15 @@ export default function Home(){
         <div className="progressCard">
           <div>
             <span>DAILY PROGRESS</span>
-            <b>{done} of {dayTasks.length} tasks complete</b>
+            <b>
+              {done} of {dayTasks.length} tasks complete
+            </b>
           </div>
-          <div className="bar"><i style={{width:pct+'%'}}/></div>
+
+          <div className="bar">
+            <i style={{width:pct+'%'}}/>
+          </div>
+
           <strong>{pct}%</strong>
         </div>
 
@@ -387,68 +562,127 @@ export default function Home(){
           <div className="card checklistCard">
             <div className="cardTitle">
               <div>
-                <p className="eyebrow">TODAY'S MISSION</p>
+                <p className="eyebrow">
+                  TODAY'S MISSION
+                </p>
                 <h3>Study plan</h3>
               </div>
-              <span className="taskCount">{done}/{dayTasks.length}</span>
+
+              <span className="taskCount">
+                {done}/{dayTasks.length}
+              </span>
             </div>
 
             <div className="tasks">
               {dayTasks.map(t=>
-                <label className={'task '+(t.completed?'done':'')} key={t.id}>
-                  <input type="checkbox" checked={t.completed} onChange={()=>toggle(t)}/>
+                <label
+                  className={
+                    'task '+(t.completed?'done':'')
+                  }
+                  key={t.id}
+                >
+                  <input
+                    type="checkbox"
+                    checked={t.completed}
+                    onChange={()=>toggle(t)}
+                  />
+
                   <span className="taskCheck"/>
+
                   <span className="taskBody">
                     <b>{t.task_type}</b>
                     <strong>{t.title}</strong>
-                    <small>{t.resource} · {t.estimated_minutes||0} min</small>
+                    <small>
+                      {t.resource} · {t.estimated_minutes||0} min
+                    </small>
                   </span>
                 </label>
               )}
-              {!dayTasks.length&&<p>No tasks for this date yet.</p>}
+
+              {!dayTasks.length&&
+                <p>No tasks for this date yet.</p>
+              }
             </div>
           </div>
 
           <div className="card pomodoroCard">
             <div className="timerTop">
               <div>
-                <p className="eyebrow">FOCUS MODE</p>
+                <p className="eyebrow">
+                  FOCUS MODE
+                </p>
                 <h3>Pomodoro</h3>
               </div>
-              <select value={focusMin} onChange={e=>{
-                const v=+e.target.value
-                setFocusMin(v)
-                setBreakMin(v===25?5:10)
-                setSeconds(v*60)
-                setTimerMode('Focus')
-                setRunning(false)
-              }}>
+
+              <select
+                value={focusMin}
+                onChange={e=>{
+                  const v=+e.target.value
+                  setFocusMin(v)
+                  setBreakMin(v===25?5:10)
+                  setSeconds(v*60)
+                  setTimerMode('Focus')
+                  setRunning(false)
+                }}
+              >
                 <option value="25">25 / 5</option>
                 <option value="50">50 / 10</option>
                 <option value="60">60 / 10</option>
               </select>
             </div>
 
-            <div className="timerRing" style={{'--timer':timerPct}}>
+            <div
+              className="timerRing"
+              style={{'--timer':timerPct}}
+            >
               <div>
-                <span>{timerMode.toUpperCase()}</span>
+                <span>
+                  {timerMode.toUpperCase()}
+                </span>
+
                 <strong>{m}:{s}</strong>
-                <small>{running?'Stay locked in.':'Ready when you are.'}</small>
+
+                <small>
+                  {running
+                    ?'Stay locked in.'
+                    :'Ready when you are.'}
+                </small>
               </div>
             </div>
 
             <div className="actions">
-              <button onClick={()=>setRunning(!running)}>{running?'Pause':'Start focus'}</button>
-              <button className="secondary" onClick={()=>{
-                setRunning(false)
-                setTimerMode('Focus')
-                setSeconds(focusMin*60)
-              }}>Reset</button>
+              <button
+                onClick={()=>setRunning(!running)}
+              >
+                {running?'Pause':'Start focus'}
+              </button>
+
+              <button
+                className="secondary"
+                onClick={()=>{
+                  setRunning(false)
+                  setTimerMode('Focus')
+                  setSeconds(focusMin*60)
+                }}
+              >
+                Reset
+              </button>
             </div>
 
             <div className="timerFooter">
-              <div><span>TODAY</span><b>{hoursText(selectedActualMinutes)}</b></div>
-              <div><span>GOAL</span><b>{hoursText(selectedPlannedMinutes)}</b></div>
+              <div>
+                <span>TODAY</span>
+                <b>
+                  {hoursText(selectedActualMinutes)}
+                </b>
+              </div>
+
+              <div>
+                <span>GOAL</span>
+                <b>
+                  {hoursText(selectedPlannedMinutes)}
+                </b>
+              </div>
             </div>
           </div>
         </div>
@@ -458,14 +692,42 @@ export default function Home(){
         <div className="card">
           <div className="calendarHead">
             <h3>Study calendar</h3>
-            <input type="date" value={selected} min="2026-09-15" max="2027-04-17" onChange={e=>setSelected(e.target.value)}/>
+
+            <input
+              type="date"
+              value={selected}
+              min="2026-09-16"
+              max="2027-01-29"
+              onChange={e=>setSelected(e.target.value)}
+            />
           </div>
+
           <div className="monthGrid">
             {schedule.map(r=>{
-              const dt=tasks.filter(t=>t.task_date===r.date)
-              const dc=dt.filter(t=>t.completed).length
-              const p=dt.length?dc/dt.length:0
-              return <button key={r.date} onClick={()=>{setSelected(r.date);setTab('Today')}} className={r.date===todayISO()?'today':''}>
+              const dt=tasks.filter(
+                t=>t.task_date===r.date
+              )
+
+              const dc=dt.filter(
+                t=>t.completed
+              ).length
+
+              const p=dt.length
+                ?dc/dt.length
+                :0
+
+              return <button
+                key={r.date}
+                onClick={()=>{
+                  setSelected(r.date)
+                  setTab('Today')
+                }}
+                className={
+                  r.date===todayISO()
+                    ?'today'
+                    :''
+                }
+              >
                 <span>{fmt(r.date)}</span>
                 <b>{r.phase.split('/')[0]}</b>
                 <i style={{width:(p*100)+'%'}}/>
@@ -480,22 +742,73 @@ export default function Home(){
         <div className="grid2">
           <div className="card">
             <h3>Log a question block</h3>
-            <form className="form" onSubmit={addQuestions}>
-              <select name="source"><option>UWorld</option><option>AAMC</option><option>Kaplan</option><option>Jack Westin</option></select>
-              <select name="subject"><option>B/B</option><option>C/P</option><option>P/S</option><option>CARS</option></select>
-              <input name="total" type="number" min="1" placeholder="Total questions" required/>
-              <input name="correct" type="number" min="0" placeholder="Correct" required/>
-              <label className="check"><input name="timed" type="checkbox"/> Timed block</label>
+
+            <form
+              className="form"
+              onSubmit={addQuestions}
+            >
+              <select name="source">
+                <option>UWorld</option>
+                <option>AAMC</option>
+                <option>Kaplan</option>
+                <option>Jack Westin</option>
+              </select>
+
+              <select name="subject">
+                <option>B/B</option>
+                <option>C/P</option>
+                <option>P/S</option>
+                <option>CARS</option>
+              </select>
+
+              <input
+                name="total"
+                type="number"
+                min="1"
+                placeholder="Total questions"
+                required
+              />
+
+              <input
+                name="correct"
+                type="number"
+                min="0"
+                placeholder="Correct"
+                required
+              />
+
+              <label className="check">
+                <input
+                  name="timed"
+                  type="checkbox"
+                />
+                {' '}Timed block
+              </label>
+
               <button>Save block</button>
             </form>
           </div>
+
           <div className="card">
             <h3>Recent performance</h3>
-            <div className="bigStat">{accuracy}%<small>overall accuracy</small></div>
-            {qlogs.slice(0,8).map(q=><div className="row" key={q.id}>
-              <span>{q.source} · {q.subject}</span>
-              <b>{q.correct_questions}/{q.total_questions}</b>
-            </div>)}
+
+            <div className="bigStat">
+              {accuracy}%
+              <small>overall accuracy</small>
+            </div>
+
+            {qlogs.slice(0,8).map(q=>
+              <div className="row" key={q.id}>
+                <span>
+                  {q.source} · {q.subject}
+                </span>
+
+                <b>
+                  {q.correct_questions}/
+                  {q.total_questions}
+                </b>
+              </div>
+            )}
           </div>
         </div>
       }
@@ -504,50 +817,155 @@ export default function Home(){
         <div className="grid2">
           <div className="card">
             <h3>Log full-length</h3>
-            <form className="form" onSubmit={addFL}>
-              <input name="date" type="date" required/>
-              <input name="name" placeholder="Exam name (e.g. AAMC FL 1)" required/>
+
+            <form
+              className="form"
+              onSubmit={addFL}
+            >
+              <input
+                name="date"
+                type="date"
+                required
+              />
+
+              <input
+                name="name"
+                placeholder="Exam name (e.g. AAMC FL 1)"
+                required
+              />
+
               <div className="four">
-                <input name="cp" type="number" min="118" max="132" placeholder="C/P" required/>
-                <input name="cars" type="number" min="118" max="132" placeholder="CARS" required/>
-                <input name="bb" type="number" min="118" max="132" placeholder="B/B" required/>
-                <input name="ps" type="number" min="118" max="132" placeholder="P/S" required/>
+                <input
+                  name="cp"
+                  type="number"
+                  min="118"
+                  max="132"
+                  placeholder="C/P"
+                  required
+                />
+
+                <input
+                  name="cars"
+                  type="number"
+                  min="118"
+                  max="132"
+                  placeholder="CARS"
+                  required
+                />
+
+                <input
+                  name="bb"
+                  type="number"
+                  min="118"
+                  max="132"
+                  placeholder="B/B"
+                  required
+                />
+
+                <input
+                  name="ps"
+                  type="number"
+                  min="118"
+                  max="132"
+                  placeholder="P/S"
+                  required
+                />
               </div>
+
               <button>Save score</button>
             </form>
           </div>
+
           <div className="card">
             <h3>Score history</h3>
-            {fls.length?fls.map(f=><div className="score" key={f.id}>
-              <div><b>{f.exam_name}</b><small>{fmt(f.exam_date)}</small></div>
-              <strong>{f.total_score}</strong>
-            </div>):<p>No full-lengths logged yet.</p>}
+
+            {fls.length
+              ?fls.map(f=>
+                <div
+                  className="score"
+                  key={f.id}
+                >
+                  <div>
+                    <b>{f.exam_name}</b>
+                    <small>
+                      {fmt(f.exam_date)}
+                    </small>
+                  </div>
+
+                  <strong>
+                    {f.total_score}
+                  </strong>
+                </div>
+              )
+              :<p>No full-lengths logged yet.</p>
+            }
           </div>
         </div>
       }
 
       {tab==='Analytics'&&<>
         <div className="stats">
-          <div><b>{allDone}</b><span>tasks completed</span></div>
-          <div><b>{tasks.length?Math.round(allDone/tasks.length*100):0}%</b><span>plan completed</span></div>
-          <div><b>{totalQuestions}</b><span>questions logged</span></div>
-          <div><b>{accuracy||'—'}</b><span>{accuracy?'% accuracy':'accuracy'}</span></div>
+          <div>
+            <b>{allDone}</b>
+            <span>tasks completed</span>
+          </div>
+
+          <div>
+            <b>
+              {tasks.length
+                ?Math.round(
+                  allDone/tasks.length*100
+                )
+                :0}%
+            </b>
+            <span>plan completed</span>
+          </div>
+
+          <div>
+            <b>{totalQuestions}</b>
+            <span>questions logged</span>
+          </div>
+
+          <div>
+            <b>{accuracy||'—'}</b>
+            <span>
+              {accuracy
+                ?'% accuracy'
+                :'accuracy'}
+            </span>
+          </div>
         </div>
+
         <div className="card">
           <h3>Phase roadmap</h3>
+
           {[
-            ['Sep–Oct','Ramp-up + Kaplan/JW'],
-            ['Nov–Jan','UWorld-heavy practice'],
-            ['Feb–Mar','AAMC official material + FLs'],
-            ['April','Final AAMC work + taper']
-          ].map((x,i)=><div className="road" key={x[0]}>
-            <em>{i+1}</em>
-            <div><b>{x[0]}</b><p>{x[1]}</p></div>
-          </div>)}
+            ['Sep 16–Oct 29','Gradual ramp + Kaplan/JW'],
+            ['Oct 30–Nov 22','UWorld practice transition'],
+            ['Nov 23–Dec 20','Heavy UWorld + error review'],
+            ['Dec 21–Jan 24','AAMC official material + FLs'],
+            ['Jan 25–29','Final taper + MCAT']
+          ].map((x,i)=>
+            <div
+              className="road"
+              key={x[0]}
+            >
+              <em>{i+1}</em>
+
+              <div>
+                <b>{x[0]}</b>
+                <p>{x[1]}</p>
+              </div>
+            </div>
+          )}
         </div>
       </>}
 
-      {msg&&<div className="toast">{msg}</div>}
+      {msg&&
+        <div className="toast">
+          {msg}
+        </div>
+      }
     </section>
   </main>
 }
