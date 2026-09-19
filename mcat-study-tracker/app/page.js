@@ -4,8 +4,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import schedule from '../data/schedule.json'
 
-const fmt = (d) =>
-  new Date(`${d}T12:00:00`).toLocaleDateString(undefined, {
+/* =========================================================
+   HELPERS
+   ========================================================= */
+
+const fmt = (date) =>
+  new Date(`${date}T12:00:00`).toLocaleDateString(undefined, {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
@@ -15,197 +19,322 @@ const todayISO = () => new Date().toLocaleDateString('en-CA')
 
 const PLAN_START = schedule[0]?.date || '2026-09-19'
 
-const TASKS = (r) => {
-  const a = []
+const hoursText = (minutes) => {
+  const total = Number(minutes) || 0
+  const h = Math.floor(total / 60)
+  const m = total % 60
 
-  if (r.anki && !/none|rest/i.test(r.anki)) {
-    a.push({
-      type: 'Anki',
-      title: r.anki,
-      resource: 'Anki',
-      minutes: r.anki_minutes || 35,
-    })
-  }
-
-  if (Number(r.questions) > 0) {
-    a.push({
-      type: 'Questions',
-      title: `${r.questions} ${
-        r.question_subject || 'MCAT'
-      } questions — timed + full review`,
-      resource: r.source || 'Question Bank',
-      minutes:
-        r.question_minutes ||
-        Math.max(30, Number(r.questions) * 3),
-    })
-  }
-
-  if (Number(r.cars) > 0) {
-    a.push({
-      type: 'CARS',
-      title: `${r.cars} CARS passage${
-        Number(r.cars) === 1 ? '' : 's'
-      } — timed + review`,
-      resource: r.cars_source || 'CARS',
-      minutes: r.cars_minutes || Number(r.cars) * 20,
-    })
-  }
-
-  if (r.recall && !/none/i.test(r.recall)) {
-    a.push({
-      type: 'Content',
-      title: r.recall,
-      resource: 'Daily Recall',
-      minutes: r.recall_minutes || 20,
-    })
-  }
-
-  if (r.content && !/none|rest/i.test(r.content)) {
-    a.push({
-      type: 'Content',
-      title: r.content,
-      resource: 'Targeted Repair',
-      minutes: r.content_minutes || 25,
-    })
-  }
-
-  if (!a.length) {
-    a.push({
-      type: 'Rest',
-      title: r.assignment || 'Recovery / no scheduled studying',
-      resource: 'Plan',
-      minutes: 0,
-    })
-  }
-
-  return a
-}
-
-const hoursText = (min) => {
-  const h = Math.floor(min / 60)
-  const m = min % 60
-
-  if (h) {
+  if (h > 0) {
     return `${h}h${m ? ` ${m}m` : ''}`
   }
 
   return `${m}m`
 }
 
+/* =========================================================
+   BUILD TASKS FROM SCHEDULE.JSON
+   ========================================================= */
+
+const TASKS = (r) => {
+  const tasks = []
+
+  if (r.anki && !/none|rest/i.test(r.anki)) {
+    tasks.push({
+      type: 'Anki',
+      title: r.anki,
+      resource: 'Anki',
+      minutes: Number(r.anki_minutes) || 35,
+    })
+  }
+
+  if (Number(r.questions) > 0) {
+    tasks.push({
+      type: 'Questions',
+      title: `${r.questions} ${
+        r.question_subject || 'MCAT'
+      } questions — timed + full review`,
+      resource: r.source || 'Question Bank',
+      minutes:
+        Number(r.question_minutes) ||
+        Math.max(30, Number(r.questions) * 3),
+    })
+  }
+
+  if (Number(r.cars) > 0) {
+    tasks.push({
+      type: 'CARS',
+      title: `${r.cars} CARS passage${
+        Number(r.cars) === 1 ? '' : 's'
+      } — timed + review`,
+      resource: r.cars_source || 'CARS',
+      minutes:
+        Number(r.cars_minutes) ||
+        Number(r.cars) * 20,
+    })
+  }
+
+  if (r.recall && !/none|rest/i.test(r.recall)) {
+    tasks.push({
+      type: 'Content',
+      title: r.recall,
+      resource: 'Daily Recall',
+      minutes: Number(r.recall_minutes) || 20,
+    })
+  }
+
+  if (r.content && !/none|rest/i.test(r.content)) {
+    tasks.push({
+      type: 'Content',
+      title: r.content,
+      resource: 'Targeted Repair',
+      minutes: Number(r.content_minutes) || 25,
+    })
+  }
+
+  if (!tasks.length) {
+    tasks.push({
+      type: 'Rest',
+      title:
+        r.assignment ||
+        'Recovery / no scheduled studying',
+      resource: 'Plan',
+      minutes: 0,
+    })
+  }
+
+  return tasks
+}
+
+/* =========================================================
+   APP
+   ========================================================= */
+
 export default function Home() {
+  /* ---------- AUTH ---------- */
+
   const [session, setSession] = useState(null)
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [authMode, setAuthMode] = useState('signin')
-  const [msg, setMsg] = useState('')
 
-  const [tab, setTab] = useState('Today')
+  const [authMode, setAuthMode] =
+    useState('signin')
 
-  const [tasks, setTasks] = useState([])
-  const [days, setDays] = useState([])
-  const [selected, setSelected] = useState(todayISO())
+  const [authLoading, setAuthLoading] =
+    useState(false)
 
-  const [loading, setLoading] = useState(true)
-  const [authLoading, setAuthLoading] = useState(false)
+  const [loading, setLoading] =
+    useState(true)
 
-  const [qlogs, setQlogs] = useState([])
-  const [fls, setFls] = useState([])
-  const [sessions, setSessions] = useState([])
+  const [msg, setMsg] =
+    useState('')
 
-  const [seconds, setSeconds] = useState(25 * 60)
-  const [running, setRunning] = useState(false)
-  const [focusMin, setFocusMin] = useState(25)
-  const [breakMin, setBreakMin] = useState(5)
-  const [timerMode, setTimerMode] = useState('Focus')
+  /* ---------- APP ---------- */
+
+  const [tab, setTab] =
+    useState('Today')
+
+  const [selected, setSelected] =
+    useState(todayISO())
+
+  const [tasks, setTasks] =
+    useState([])
+
+  const [days, setDays] =
+    useState([])
+
+  const [qlogs, setQlogs] =
+    useState([])
+
+  const [fls, setFls] =
+    useState([])
+
+  const [sessions, setSessions] =
+    useState([])
+
+  /* ---------- TIMER ---------- */
+
+  const [focusMin, setFocusMin] =
+    useState(25)
+
+  const [breakMin, setBreakMin] =
+    useState(5)
+
+  const [timerMode, setTimerMode] =
+    useState('Focus')
+
+  const [seconds, setSeconds] =
+    useState(25 * 60)
+
+  const [running, setRunning] =
+    useState(false)
 
   const timerRef = useRef(null)
 
+  /* =========================================================
+     CURRENT SCHEDULE DAY
+     ========================================================= */
+
   const planned = useMemo(() => {
-    return schedule.find((x) => x.date === selected) || schedule[0]
+    return (
+      schedule.find(
+        (x) => x.date === selected
+      ) || null
+    )
   }, [selected])
+
+  /* =========================================================
+     SELECTED DAY TASKS
+     ========================================================= */
 
   const selectedTasks = useMemo(() => {
     return tasks
-      .filter((t) => t.task_date === selected)
+      .filter(
+        (task) =>
+          task.task_date === selected
+      )
       .sort(
         (a, b) =>
-          (a.sort_order || 0) - (b.sort_order || 0)
+          (a.sort_order || 0) -
+          (b.sort_order || 0)
       )
   }, [tasks, selected])
 
-  const completed = selectedTasks.filter(
-    (t) => t.completed
-  ).length
+  const completed =
+    selectedTasks.filter(
+      (task) => task.completed
+    ).length
 
-  const pct = selectedTasks.length
-    ? Math.round((completed / selectedTasks.length) * 100)
-    : 0
+  const pct =
+    selectedTasks.length > 0
+      ? Math.round(
+          (completed /
+            selectedTasks.length) *
+            100
+        )
+      : 0
 
-  const plannedMinutes = selectedTasks.reduce(
-    (sum, task) =>
-      sum + (Number(task.estimated_minutes) || 0),
-    0
-  )
-
-  const actualMinutes = sessions
-    .filter((s) => s.session_date === selected)
-    .reduce(
-      (sum, s) =>
-        sum + (Number(s.actual_minutes) || 0),
+  const plannedMinutes =
+    selectedTasks.reduce(
+      (sum, task) =>
+        sum +
+        (Number(
+          task.estimated_minutes
+        ) || 0),
       0
     )
+
+  const actualMinutes =
+    sessions
+      .filter(
+        (s) =>
+          s.session_date === selected
+      )
+      .reduce(
+        (sum, s) =>
+          sum +
+          (Number(
+            s.actual_minutes
+          ) || 0),
+        0
+      )
+
+  /* =========================================================
+     WEEK
+     ========================================================= */
 
   const weekDates = useMemo(() => {
-    const base = new Date(`${selected}T12:00:00`)
+    const base = new Date(
+      `${selected}T12:00:00`
+    )
+
     const monday = new Date(base)
 
-    const shift = (base.getDay() + 6) % 7
+    const shift =
+      (base.getDay() + 6) % 7
 
-    monday.setDate(base.getDate() - shift)
+    monday.setDate(
+      base.getDate() - shift
+    )
 
-    return Array.from({ length: 7 }, (_, i) => {
-      const x = new Date(monday)
+    return Array.from(
+      { length: 7 },
+      (_, index) => {
+        const date =
+          new Date(monday)
 
-      x.setDate(monday.getDate() + i)
+        date.setDate(
+          monday.getDate() + index
+        )
 
-      return x.toLocaleDateString('en-CA')
-    })
+        return date.toLocaleDateString(
+          'en-CA'
+        )
+      }
+    )
   }, [selected])
 
-  const weekTasks = tasks.filter((t) =>
-    weekDates.includes(t.task_date)
-  )
+  const weekTasks =
+    tasks.filter((task) =>
+      weekDates.includes(
+        task.task_date
+      )
+    )
 
-  const weekCompleted = weekTasks.filter(
-    (t) => t.completed
-  ).length
+  const weekCompleted =
+    weekTasks.filter(
+      (task) => task.completed
+    ).length
 
-  const weekPlanned = weekTasks.reduce(
-    (sum, task) =>
-      sum + (Number(task.estimated_minutes) || 0),
-    0
-  )
-
-  const weekActual = sessions
-    .filter((s) => weekDates.includes(s.session_date))
-    .reduce(
-      (sum, s) =>
-        sum + (Number(s.actual_minutes) || 0),
+  const weekPlanned =
+    weekTasks.reduce(
+      (sum, task) =>
+        sum +
+        (Number(
+          task.estimated_minutes
+        ) || 0),
       0
     )
+
+  const weekActual =
+    sessions
+      .filter((s) =>
+        weekDates.includes(
+          s.session_date
+        )
+      )
+      .reduce(
+        (sum, s) =>
+          sum +
+          (Number(
+            s.actual_minutes
+          ) || 0),
+        0
+      )
+
+  /* =========================================================
+     AUTH INITIALIZATION
+     ========================================================= */
 
   useEffect(() => {
     if (!supabase) {
-      setMsg('Supabase is not configured.')
+      setMsg(
+        'Supabase is not configured.'
+      )
+
       setLoading(false)
+
       return
     }
 
     let mounted = true
 
     async function getSession() {
-      const { data, error } = await supabase.auth.getSession()
+      const {
+        data,
+        error,
+      } =
+        await supabase.auth.getSession()
 
       if (!mounted) return
 
@@ -213,7 +342,10 @@ export default function Home() {
         setMsg(error.message)
       }
 
-      setSession(data?.session || null)
+      setSession(
+        data?.session || null
+      )
+
       setLoading(false)
     }
 
@@ -221,23 +353,31 @@ export default function Home() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      if (mounted) {
-        setSession(newSession)
-      }
-    })
+    } =
+      supabase.auth.onAuthStateChange(
+        (_event, newSession) => {
+          if (mounted) {
+            setSession(newSession)
+          }
+        }
+      )
 
     return () => {
       mounted = false
+
       subscription.unsubscribe()
     }
   }, [])
 
+  /* =========================================================
+     LOAD USER DATA + REPAIR SCHEDULE
+     ========================================================= */
+
   useEffect(() => {
     if (!session) return
 
-    let channel
     let cancelled = false
+    let channel = null
 
     async function initialize() {
       await syncSchedule()
@@ -249,14 +389,17 @@ export default function Home() {
       if (cancelled) return
 
       channel = supabase
-        .channel(`daily-task-changes-${session.user.id}`)
+        .channel(
+          `daily-task-changes-${session.user.id}`
+        )
         .on(
           'postgres_changes',
           {
             event: '*',
             schema: 'public',
             table: 'daily_tasks',
-            filter: `user_id=eq.${session.user.id}`,
+            filter:
+              `user_id=eq.${session.user.id}`,
           },
           () => {
             loadAll()
@@ -271,311 +414,649 @@ export default function Home() {
       cancelled = true
 
       if (channel) {
-        supabase.removeChannel(channel)
+        supabase.removeChannel(
+          channel
+        )
       }
     }
   }, [session])
 
+  /* =========================================================
+     TIMER
+     ========================================================= */
+
   useEffect(() => {
     if (!running) return
 
-    timerRef.current = setInterval(() => {
-      setSeconds((current) => {
-        if (current <= 1) {
-          clearInterval(timerRef.current)
+    timerRef.current =
+      setInterval(() => {
+        setSeconds(
+          (current) => {
+            if (current <= 1) {
+              clearInterval(
+                timerRef.current
+              )
 
-          setRunning(false)
+              setRunning(false)
 
-          if (timerMode === 'Focus') {
-            logSession(focusMin)
+              if (
+                timerMode ===
+                'Focus'
+              ) {
+                logSession(
+                  focusMin
+                )
+              }
+
+              const nextMode =
+                timerMode ===
+                'Focus'
+                  ? 'Break'
+                  : 'Focus'
+
+              setTimerMode(
+                nextMode
+              )
+
+              return (
+                (nextMode ===
+                'Focus'
+                  ? focusMin
+                  : breakMin) *
+                60
+              )
+            }
+
+            return current - 1
           }
-
-          const nextMode =
-            timerMode === 'Focus' ? 'Break' : 'Focus'
-
-          setTimerMode(nextMode)
-
-          return (
-            (nextMode === 'Focus' ? focusMin : breakMin) *
-            60
-          )
-        }
-
-        return current - 1
-      })
-    }, 1000)
+        )
+      }, 1000)
 
     return () => {
-      clearInterval(timerRef.current)
+      clearInterval(
+        timerRef.current
+      )
     }
-  }, [running, timerMode, focusMin, breakMin])
+  }, [
+    running,
+    timerMode,
+    focusMin,
+    breakMin,
+  ])
+
+  /* =========================================================
+     SAFE FULL-SCHEDULE SYNC
+
+     IMPORTANT:
+     - checks EVERY date
+     - repairs MANY missing dates
+     - repairs partially seeded dates
+     - does NOT delete completed tasks
+     - does NOT reset progress
+     ========================================================= */
 
   async function syncSchedule() {
     if (!session) return
 
-    const uid = session.user.id
+    const uid =
+      session.user.id
+
+    setMsg(
+      'Checking study schedule...'
+    )
+
+    /* ---------- GET EXISTING DAYS ---------- */
 
     const {
-      data: marker,
-      error: markerError,
+      data: existingDays,
+      error: daysError,
+    } = await supabase
+      .from('study_days')
+      .select('*')
+      .eq('user_id', uid)
+      .gte(
+        'study_date',
+        PLAN_START
+      )
+
+    if (daysError) {
+      setMsg(
+        `Schedule check failed: ${daysError.message}`
+      )
+
+      return
+    }
+
+    /* ---------- GET EXISTING TASKS ---------- */
+
+    const {
+      data: existingTasks,
+      error: tasksError,
     } = await supabase
       .from('daily_tasks')
-      .select('id')
+      .select('*')
       .eq('user_id', uid)
-      .eq('task_date', PLAN_START)
-      .eq('resource', 'Daily Recall')
-      .limit(1)
-
-    if (markerError) {
-      setMsg(markerError.message)
-      return
-    }
-
-    /*
-      If the new January 21 schedule has already
-      been installed, do nothing.
-    */
-
-    if (marker?.length) {
-      return
-    }
-
-    /*
-      Remove only OLD PLANNED TASKS from
-      September 19 forward.
-
-      This does NOT delete:
-      - question logs
-      - Pomodoro sessions
-      - full-length scores
-      - older history before September 19
-    */
-
-    const { error: taskDeleteError } = await supabase
-      .from('daily_tasks')
-      .delete()
-      .eq('user_id', uid)
-      .gte('task_date', PLAN_START)
-
-    if (taskDeleteError) {
-      setMsg(
-        `Schedule sync stopped: ${taskDeleteError.message}`
+      .gte(
+        'task_date',
+        PLAN_START
       )
-      return
-    }
 
-    const { error: dayDeleteError } = await supabase
-      .from('study_days')
-      .delete()
-      .eq('user_id', uid)
-      .gte('study_date', PLAN_START)
-
-    if (dayDeleteError) {
+    if (tasksError) {
       setMsg(
-        `Schedule sync stopped: ${dayDeleteError.message}`
+        `Schedule check failed: ${tasksError.message}`
       )
+
       return
     }
+
+    const dayList = [
+      ...(existingDays || []),
+    ]
+
+    const taskList = [
+      ...(existingTasks || []),
+    ]
+
+    let addedDays = 0
+    let addedTasks = 0
+
+    /* =====================================================
+       CHECK EVERY DATE IN SCHEDULE.JSON
+       ===================================================== */
 
     for (const r of schedule) {
-      const isFL = /full.?length/i.test(
-        `${r.assignment || ''} ${r.source || ''}`
-      )
+      /* ---------- FIND STUDY DAY ---------- */
 
-      const {
-        data: day,
-        error: dayError,
-      } = await supabase
-        .from('study_days')
-        .insert({
-          user_id: uid,
-          study_date: r.date,
-          phase: r.phase || 'Study',
-          planned_hours: Number(r.hours) || 0,
-          is_rest_day: Number(r.hours) === 0,
-          is_full_length_day: isFL,
-        })
-        .select()
-        .single()
-
-      if (dayError) {
-        setMsg(
-          `Could not add ${r.date}: ${dayError.message}`
+      let day =
+        dayList.find(
+          (d) =>
+            d.study_date ===
+            r.date
         )
-        return
+
+      /* ---------- CREATE MISSING STUDY DAY ---------- */
+
+      if (!day) {
+        const isFL =
+          /full.?length/i.test(
+            `${
+              r.assignment || ''
+            } ${
+              r.source || ''
+            }`
+          )
+
+        const {
+          data: newDay,
+          error: dayError,
+        } = await supabase
+          .from('study_days')
+          .insert({
+            user_id: uid,
+
+            study_date:
+              r.date,
+
+            phase:
+              r.phase ||
+              'Study',
+
+            planned_hours:
+              Number(
+                r.hours
+              ) || 0,
+
+            is_rest_day:
+              Number(
+                r.hours
+              ) === 0,
+
+            is_full_length_day:
+              isFL,
+          })
+          .select()
+          .single()
+
+        if (dayError) {
+          setMsg(
+            `Could not repair ${r.date}: ${dayError.message}`
+          )
+
+          return
+        }
+
+        day = newDay
+
+        dayList.push(
+          newDay
+        )
+
+        addedDays++
       }
 
-      const rows = TASKS(r).map((task, index) => ({
-        user_id: uid,
-        study_day_id: day.id,
-        task_date: r.date,
-        task_type: task.type,
-        title: task.title,
-        description: r.notes || r.assignment || '',
-        resource: task.resource,
-        estimated_minutes: task.minutes,
-        sort_order: index + 1,
-        completed: false,
-        completed_at: null,
-      }))
+      /* ---------- EXPECTED TASKS ---------- */
 
-      const { error: taskError } = await supabase
-        .from('daily_tasks')
-        .insert(rows)
+      const expectedTasks =
+        TASKS(r)
 
-      if (taskError) {
-        setMsg(
-          `Could not add tasks for ${r.date}: ${taskError.message}`
+      const dateTasks =
+        taskList.filter(
+          (task) =>
+            task.task_date ===
+            r.date
         )
-        return
+
+      /* ===================================================
+         CHECK EVERY TASK FOR THIS DATE
+         =================================================== */
+
+      for (
+        let index = 0;
+        index <
+        expectedTasks.length;
+        index++
+      ) {
+        const expected =
+          expectedTasks[index]
+
+        const alreadyExists =
+          dateTasks.some(
+            (existing) =>
+              existing.task_type ===
+                expected.type &&
+              existing.resource ===
+                expected.resource &&
+              existing.title ===
+                expected.title
+          )
+
+        /* KEEP EXISTING TASK */
+
+        if (alreadyExists) {
+          continue
+        }
+
+        /* ---------- ADD MISSING TASK ---------- */
+
+        const {
+          data: newTask,
+          error: taskError,
+        } = await supabase
+          .from('daily_tasks')
+          .insert({
+            user_id: uid,
+
+            study_day_id:
+              day.id,
+
+            task_date:
+              r.date,
+
+            task_type:
+              expected.type,
+
+            title:
+              expected.title,
+
+            description:
+              r.notes ||
+              r.assignment ||
+              '',
+
+            resource:
+              expected.resource,
+
+            estimated_minutes:
+              expected.minutes,
+
+            sort_order:
+              index + 1,
+
+            completed: false,
+
+            completed_at: null,
+          })
+          .select()
+          .single()
+
+        if (taskError) {
+          setMsg(
+            `Could not repair tasks for ${r.date}: ${taskError.message}`
+          )
+
+          return
+        }
+
+        taskList.push(
+          newTask
+        )
+
+        dateTasks.push(
+          newTask
+        )
+
+        addedTasks++
       }
     }
 
-    setMsg('January 21 MCAT plan synced.')
+    /* ---------- FINISHED ---------- */
+
+    if (
+      addedDays === 0 &&
+      addedTasks === 0
+    ) {
+      setMsg('')
+    } else {
+      setMsg(
+        `Schedule repaired — ${addedDays} missing days and ${addedTasks} missing tasks restored.`
+      )
+    }
   }
+
+  /* =========================================================
+     LOAD DATABASE
+     ========================================================= */
 
   async function loadAll() {
     if (!session) return
 
-    const uid = session.user.id
+    const uid =
+      session.user.id
 
-    const [t, d, q, f, se] = await Promise.all([
-      supabase
-        .from('daily_tasks')
-        .select('*')
-        .eq('user_id', uid)
-        .order('task_date')
-        .order('sort_order'),
+    const [
+      taskResult,
+      dayResult,
+      questionResult,
+      flResult,
+      sessionResult,
+    ] =
+      await Promise.all([
+        supabase
+          .from(
+            'daily_tasks'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'task_date'
+          )
+          .order(
+            'sort_order'
+          ),
 
-      supabase
-        .from('study_days')
-        .select('*')
-        .eq('user_id', uid)
-        .order('study_date'),
+        supabase
+          .from(
+            'study_days'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'study_date'
+          ),
 
-      supabase
-        .from('question_blocks')
-        .select('*')
-        .eq('user_id', uid)
-        .order('question_date', {
-          ascending: false,
-        })
-        .limit(100),
+        supabase
+          .from(
+            'question_blocks'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'question_date',
+            {
+              ascending:
+                false,
+            }
+          )
+          .limit(100),
 
-      supabase
-        .from('full_length_scores')
-        .select('*')
-        .eq('user_id', uid)
-        .order('exam_date', {
-          ascending: false,
-        }),
+        supabase
+          .from(
+            'full_length_scores'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'exam_date',
+            {
+              ascending:
+                false,
+            }
+          ),
 
-      supabase
-        .from('study_sessions')
-        .select('*')
-        .eq('user_id', uid)
-        .order('session_date', {
-          ascending: false,
-        })
-        .limit(500),
-    ])
+        supabase
+          .from(
+            'study_sessions'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'session_date',
+            {
+              ascending:
+                false,
+            }
+          )
+          .limit(500),
+      ])
 
     const error =
-      t.error ||
-      d.error ||
-      q.error ||
-      f.error ||
-      se.error
+      taskResult.error ||
+      dayResult.error ||
+      questionResult.error ||
+      flResult.error ||
+      sessionResult.error
 
     if (error) {
-      setMsg(error.message)
-      return
-    }
-
-    setTasks(t.data || [])
-    setDays(d.data || [])
-    setQlogs(q.data || [])
-    setFls(f.data || [])
-    setSessions(se.data || [])
-  }
-
-  async function toggle(task) {
-    const completed = !task.completed
-
-    const { error } = await supabase
-      .from('daily_tasks')
-      .update({
-        completed,
-        completed_at: completed
-          ? new Date().toISOString()
-          : null,
-      })
-      .eq('id', task.id)
-
-    if (error) {
-      setMsg(error.message)
-      return
-    }
-
-    setTasks((current) =>
-      current.map((t) =>
-        t.id === task.id
-          ? {
-              ...t,
-              completed,
-              completed_at: completed
-                ? new Date().toISOString()
-                : null,
-            }
-          : t
+      setMsg(
+        error.message
       )
+
+      return
+    }
+
+    setTasks(
+      taskResult.data || []
+    )
+
+    setDays(
+      dayResult.data || []
+    )
+
+    setQlogs(
+      questionResult.data || []
+    )
+
+    setFls(
+      flResult.data || []
+    )
+
+    setSessions(
+      sessionResult.data || []
     )
   }
 
-  async function logSession(minutes) {
-    if (!session || !minutes) return
+  /* =========================================================
+     COMPLETE / UNCOMPLETE TASK
+     ========================================================= */
 
-    const { error } = await supabase
-      .from('study_sessions')
+  async function toggle(task) {
+    const newCompleted =
+      !task.completed
+
+    const {
+      error,
+    } = await supabase
+      .from('daily_tasks')
+      .update({
+        completed:
+          newCompleted,
+
+        completed_at:
+          newCompleted
+            ? new Date().toISOString()
+            : null,
+      })
+      .eq(
+        'id',
+        task.id
+      )
+
+    if (error) {
+      setMsg(
+        error.message
+      )
+
+      return
+    }
+
+    setTasks(
+      (current) =>
+        current.map(
+          (t) =>
+            t.id ===
+            task.id
+              ? {
+                  ...t,
+
+                  completed:
+                    newCompleted,
+
+                  completed_at:
+                    newCompleted
+                      ? new Date().toISOString()
+                      : null,
+                }
+              : t
+        )
+    )
+  }
+
+  /* =========================================================
+     LOG POMODORO
+     ========================================================= */
+
+  async function logSession(
+    minutes
+  ) {
+    if (
+      !session ||
+      !minutes
+    ) {
+      return
+    }
+
+    const {
+      error,
+    } = await supabase
+      .from(
+        'study_sessions'
+      )
       .insert({
-        user_id: session.user.id,
-        session_date: todayISO(),
-        actual_minutes: minutes,
-        planned_minutes: minutes,
-        session_type: 'Pomodoro',
-        ended_at: new Date().toISOString(),
+        user_id:
+          session.user.id,
+
+        session_date:
+          todayISO(),
+
+        actual_minutes:
+          minutes,
+
+        planned_minutes:
+          minutes,
+
+        session_type:
+          'Pomodoro',
+
+        ended_at:
+          new Date().toISOString(),
       })
 
     if (error) {
-      setMsg(error.message)
+      setMsg(
+        error.message
+      )
+
       return
     }
 
     await loadAll()
   }
 
-  async function addQuestions(e) {
+  /* =========================================================
+     QUESTION LOG
+     ========================================================= */
+
+  async function addQuestions(
+    e
+  ) {
     e.preventDefault()
 
-    const fd = new FormData(e.currentTarget)
+    const form =
+      new FormData(
+        e.currentTarget
+      )
 
-    const total = Number(fd.get('total'))
-    const correct = Number(fd.get('correct'))
+    const total =
+      Number(
+        form.get('total')
+      )
 
-    const { error } = await supabase
-      .from('question_blocks')
+    const correct =
+      Number(
+        form.get('correct')
+      )
+
+    const {
+      error,
+    } = await supabase
+      .from(
+        'question_blocks'
+      )
       .insert({
-        user_id: session.user.id,
-        question_date: fd.get('date'),
-        source: fd.get('source'),
-        subject: fd.get('subject'),
-        total_questions: total,
-        correct_questions: correct,
-        timed: fd.get('timed') === 'on',
+        user_id:
+          session.user.id,
+
+        question_date:
+          form.get('date'),
+
+        source:
+          form.get('source'),
+
+        subject:
+          form.get('subject'),
+
+        total_questions:
+          total,
+
+        correct_questions:
+          correct,
+
+        timed:
+          form.get(
+            'timed'
+          ) === 'on',
       })
 
     if (error) {
-      setMsg(error.message)
+      setMsg(
+        error.message
+      )
+
       return
     }
 
@@ -583,32 +1064,79 @@ export default function Home() {
 
     await loadAll()
   }
+
+  /* =========================================================
+     FULL LENGTH LOG
+     ========================================================= */
 
   async function addFL(e) {
     e.preventDefault()
 
-    const fd = new FormData(e.currentTarget)
+    const form =
+      new FormData(
+        e.currentTarget
+      )
 
-    const cp = Number(fd.get('cp'))
-    const cars = Number(fd.get('cars'))
-    const bb = Number(fd.get('bb'))
-    const ps = Number(fd.get('ps'))
+    const cp =
+      Number(
+        form.get('cp')
+      )
 
-    const { error } = await supabase
-      .from('full_length_scores')
+    const cars =
+      Number(
+        form.get('cars')
+      )
+
+    const bb =
+      Number(
+        form.get('bb')
+      )
+
+    const ps =
+      Number(
+        form.get('ps')
+      )
+
+    const {
+      error,
+    } = await supabase
+      .from(
+        'full_length_scores'
+      )
       .insert({
-        user_id: session.user.id,
-        exam_date: fd.get('date'),
-        exam_name: fd.get('name'),
-        cp_score: cp,
-        cars_score: cars,
-        bb_score: bb,
-        ps_score: ps,
-        total_score: cp + cars + bb + ps,
+        user_id:
+          session.user.id,
+
+        exam_date:
+          form.get('date'),
+
+        exam_name:
+          form.get('name'),
+
+        cp_score:
+          cp,
+
+        cars_score:
+          cars,
+
+        bb_score:
+          bb,
+
+        ps_score:
+          ps,
+
+        total_score:
+          cp +
+          cars +
+          bb +
+          ps,
       })
 
     if (error) {
-      setMsg(error.message)
+      setMsg(
+        error.message
+      )
+
       return
     }
 
@@ -617,9 +1145,9 @@ export default function Home() {
     await loadAll()
   }
 
-  /*
-    FIXED LOGIN FUNCTION
-  */
+  /* =========================================================
+     LOGIN / SIGNUP
+     ========================================================= */
 
   async function auth(e) {
     e.preventDefault()
@@ -630,53 +1158,98 @@ export default function Home() {
     try {
       let result
 
-      if (authMode === 'signin') {
-        result = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        })
+      if (
+        authMode ===
+        'signin'
+      ) {
+        result =
+          await supabase.auth.signInWithPassword(
+            {
+              email:
+                email.trim(),
+
+              password,
+            }
+          )
       } else {
-        result = await supabase.auth.signUp({
-          email: email.trim(),
-          password,
-        })
+        result =
+          await supabase.auth.signUp(
+            {
+              email:
+                email.trim(),
+
+              password,
+            }
+          )
       }
 
       if (result.error) {
-        setMsg(result.error.message)
+        setMsg(
+          result.error.message
+        )
+
         return
       }
 
-      if (result.data?.session) {
-        setSession(result.data.session)
-      } else if (authMode === 'signup') {
+      if (
+        result.data
+          ?.session
+      ) {
+        setSession(
+          result.data.session
+        )
+      } else if (
+        authMode ===
+        'signup'
+      ) {
         setMsg(
           'Account created. Check your email if confirmation is required.'
         )
       }
     } catch (error) {
-      setMsg(error?.message || 'Unable to sign in.')
+      setMsg(
+        error?.message ||
+          'Unable to sign in.'
+      )
     } finally {
       setAuthLoading(false)
     }
   }
 
+  /* =========================================================
+     TIMER CONTROLS
+     ========================================================= */
+
   function setTimer(kind) {
     setRunning(false)
+
     setTimerMode(kind)
 
     setSeconds(
-      (kind === 'Focus' ? focusMin : breakMin) * 60
+      (kind === 'Focus'
+        ? focusMin
+        : breakMin) *
+        60
     )
   }
+
+  /* =========================================================
+     LOADING
+     ========================================================= */
 
   if (loading) {
     return (
       <main className="auth">
-        <div className="card">Loading…</div>
+        <div className="card">
+          Loading…
+        </div>
       </main>
     )
   }
+
+  /* =========================================================
+     LOGIN SCREEN
+     ========================================================= */
 
   if (!session) {
     return (
@@ -685,16 +1258,24 @@ export default function Home() {
           className="card authCard"
           onSubmit={auth}
         >
-          <h1>MCAT Study Tracker</h1>
+          <h1>
+            MCAT Study Tracker
+          </h1>
 
-          <p>January 21, 2027 plan</p>
+          <p>
+            January 21, 2027 plan
+          </p>
 
           <input
             type="email"
             placeholder="Email"
             autoComplete="email"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) =>
+              setEmail(
+                e.target.value
+              )
+            }
             required
           />
 
@@ -703,17 +1284,24 @@ export default function Home() {
             placeholder="Password"
             autoComplete="current-password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) =>
+              setPassword(
+                e.target.value
+              )
+            }
             required
           />
 
           <button
             type="submit"
-            disabled={authLoading}
+            disabled={
+              authLoading
+            }
           >
             {authLoading
               ? 'Signing in...'
-              : authMode === 'signin'
+              : authMode ===
+                'signin'
               ? 'Sign in'
               : 'Create account'}
           </button>
@@ -721,48 +1309,81 @@ export default function Home() {
           <button
             type="button"
             className="secondary"
-            disabled={authLoading}
+            disabled={
+              authLoading
+            }
             onClick={() => {
               setMsg('')
-              setAuthMode((current) =>
-                current === 'signin'
-                  ? 'signup'
-                  : 'signin'
+
+              setAuthMode(
+                (current) =>
+                  current ===
+                  'signin'
+                    ? 'signup'
+                    : 'signin'
               )
             }}
           >
-            {authMode === 'signin'
+            {authMode ===
+            'signin'
               ? 'Need an account?'
               : 'Already have an account?'}
           </button>
 
           {msg && (
-            <p className="message">{msg}</p>
+            <p className="message">
+              {msg}
+            </p>
           )}
         </form>
       </main>
     )
   }
 
-  const testDate = new Date('2027-01-21T12:00:00')
-  const now = new Date()
+  /* =========================================================
+     COUNTDOWN
+     ========================================================= */
 
-  const countdown = Math.max(
-    0,
-    Math.ceil(
-      (testDate - now) / (1000 * 60 * 60 * 24)
+  const testDate =
+    new Date(
+      '2027-01-21T12:00:00'
     )
-  )
+
+  const now =
+    new Date()
+
+  const countdown =
+    Math.max(
+      0,
+      Math.ceil(
+        (testDate - now) /
+          (1000 *
+            60 *
+            60 *
+            24)
+      )
+    )
+
+  /* =========================================================
+     APP UI
+     ========================================================= */
 
   return (
     <div className="shell">
+
+      {/* =====================================================
+          SIDEBAR
+          ===================================================== */}
+
       <aside className="aside">
         <div className="logo">
           <span>λ</span>
 
           <div>
             <b>MCAT</b>
-            <small>STUDY TRACKER</small>
+            <small>
+              STUDY TRACKER
+            </small>
           </div>
         </div>
 
@@ -773,241 +1394,390 @@ export default function Home() {
             'Questions',
             'Full Lengths',
             'Analytics',
-          ].map((x) => (
+          ].map((item) => (
             <button
-              key={x}
-              className={tab === x ? 'active' : ''}
-              onClick={() => setTab(x)}
+              key={item}
+              className={
+                tab === item
+                  ? 'active'
+                  : ''
+              }
+              onClick={() =>
+                setTab(item)
+              }
             >
-              {x}
+              {item}
             </button>
           ))}
         </nav>
 
         <div className="sideExam">
-          <small>TEST DAY</small>
-          <b>JAN 21</b>
-          <span>2027</span>
+          <small>
+            TEST DAY
+          </small>
+
+          <b>
+            JAN 21
+          </b>
+
+          <span>
+            2027
+          </span>
         </div>
 
         <button
           className="secondary"
-          onClick={() => supabase.auth.signOut()}
+          onClick={() =>
+            supabase.auth.signOut()
+          }
         >
           Sign out
         </button>
       </aside>
 
+      {/* =====================================================
+          MAIN
+          ===================================================== */}
+
       <main className="content">
+
         <header className="header">
           <div>
-            <h1>{tab}</h1>
-            <p>{planned?.phase || 'MCAT preparation'}</p>
+            <h1>
+              {tab}
+            </h1>
+
+            <p>
+              {planned?.phase ||
+                'MCAT preparation'}
+            </p>
           </div>
 
           <div className="countdown">
-            <b>{countdown}</b>
-            <span>days to MCAT</span>
+            <b>
+              {countdown}
+            </b>
+
+            <span>
+              days to MCAT
+            </span>
           </div>
         </header>
 
         {msg && (
-          <div className="message">{msg}</div>
+          <div className="message">
+            {msg}
+          </div>
         )}
+
+        {/* ===================================================
+            TODAY
+            =================================================== */}
 
         {tab === 'Today' && (
           <>
             <section className="card weekSummary">
+
               <div className="weekTitle">
                 <div>
-                  <small>THIS WEEK</small>
-                  <h2>Weekly Summary</h2>
+                  <small>
+                    THIS WEEK
+                  </small>
+
+                  <h2>
+                    Weekly Summary
+                  </h2>
                 </div>
 
                 <div className="weekStats">
                   <span>
-                    <b>{weekCompleted}</b> /{' '}
-                    {weekTasks.length} tasks
+                    <b>
+                      {weekCompleted}
+                    </b>
+
+                    {` / ${weekTasks.length} tasks`}
                   </span>
 
                   <span>
-                    <b>{hoursText(weekActual)}</b>{' '}
+                    <b>
+                      {hoursText(
+                        weekActual
+                      )}
+                    </b>
+
                     focused
                   </span>
 
                   <span>
-                    <b>{hoursText(weekPlanned)}</b>{' '}
+                    <b>
+                      {hoursText(
+                        weekPlanned
+                      )}
+                    </b>
+
                     planned
                   </span>
                 </div>
               </div>
 
               <div className="weekDays">
-                {weekDates.map((date) => {
-                  const dt = tasks.filter(
-                    (t) => t.task_date === date
-                  )
+                {weekDates.map(
+                  (date) => {
+                    const dt =
+                      tasks.filter(
+                        (task) =>
+                          task.task_date ===
+                          date
+                      )
 
-                  const done = dt.filter(
-                    (t) => t.completed
-                  ).length
+                    const done =
+                      dt.filter(
+                        (task) =>
+                          task.completed
+                      ).length
 
-                  return (
-                    <button
-                      key={date}
-                      className={
-                        selected === date
-                          ? 'selected'
-                          : ''
-                      }
-                      onClick={() => setSelected(date)}
-                    >
-                      <small>
-                        {new Date(
-                          `${date}T12:00:00`
-                        ).toLocaleDateString(
-                          undefined,
-                          {
-                            weekday: 'short',
-                          }
-                        )}
-                      </small>
+                    return (
+                      <button
+                        key={date}
+                        className={
+                          selected ===
+                          date
+                            ? 'selected'
+                            : ''
+                        }
+                        onClick={() =>
+                          setSelected(
+                            date
+                          )
+                        }
+                      >
+                        <small>
+                          {new Date(
+                            `${date}T12:00:00`
+                          ).toLocaleDateString(
+                            undefined,
+                            {
+                              weekday:
+                                'short',
+                            }
+                          )}
+                        </small>
 
-                      <b>
-                        {new Date(
-                          `${date}T12:00:00`
-                        ).getDate()}
-                      </b>
+                        <b>
+                          {new Date(
+                            `${date}T12:00:00`
+                          ).getDate()}
+                        </b>
 
-                      <span>
-                        {dt.length
-                          ? `${done}/${dt.length}`
-                          : '—'}
-                      </span>
-                    </button>
-                  )
-                })}
+                        <span>
+                          {dt.length
+                            ? `${done}/${dt.length}`
+                            : '—'}
+                        </span>
+                      </button>
+                    )
+                  }
+                )}
               </div>
             </section>
+
+            {/* ---------- DAY TITLE ---------- */}
 
             <div className="todayHeading">
               <div>
                 <small>
-                  {fmt(selected).toUpperCase()}
+                  {fmt(
+                    selected
+                  ).toUpperCase()}
                 </small>
 
                 <h2>
-                  {planned?.assignment ||
+                  {planned
+                    ?.assignment ||
                     'Study Plan'}
                 </h2>
 
-                <p>{planned?.notes}</p>
+                <p>
+                  {planned?.notes ||
+                    ''}
+                </p>
               </div>
 
               <div className="todayMetrics">
                 <span>
-                  <small>PLANNED</small>
+                  <small>
+                    PLANNED
+                  </small>
+
                   <b>
-                    {hoursText(plannedMinutes)}
+                    {hoursText(
+                      plannedMinutes
+                    )}
                   </b>
                 </span>
 
                 <span>
-                  <small>FOCUSED</small>
+                  <small>
+                    FOCUSED
+                  </small>
+
                   <b>
-                    {hoursText(actualMinutes)}
+                    {hoursText(
+                      actualMinutes
+                    )}
                   </b>
                 </span>
               </div>
             </div>
 
+            {/* ---------- PROGRESS ---------- */}
+
             <section className="card progressCard">
               <div>
-                <b>Daily progress</b>
+                <b>
+                  Daily progress
+                </b>
 
                 <span>
                   {completed} of{' '}
-                  {selectedTasks.length} complete
+                  {
+                    selectedTasks.length
+                  }{' '}
+                  complete
                 </span>
               </div>
-
-              <strong>{pct}%</strong>
 
               <div className="progress">
                 <i
                   style={{
-                    width: `${pct}%`,
+                    width:
+                      `${pct}%`,
                   }}
                 />
               </div>
+
+              <strong>
+                {pct}%
+              </strong>
             </section>
 
+            {/* ---------- CHECKLIST + TIMER ---------- */}
+
             <div className="dashboardGrid">
+
               <section className="card">
                 <div className="sectionTitle">
-                  <h3>Today's Checklist</h3>
+                  <h3>
+                    Today's Checklist
+                  </h3>
 
                   <span>
-                    {selectedTasks.length} tasks
+                    {
+                      selectedTasks.length
+                    }{' '}
+                    tasks
                   </span>
                 </div>
 
                 <div className="taskList">
-                  {selectedTasks.length ? (
-                    selectedTasks.map((t) => (
-                      <button
-                        key={t.id}
-                        className={`task ${
-                          t.completed ? 'done' : ''
-                        }`}
-                        onClick={() => toggle(t)}
-                      >
-                        <span className="taskCheck">
-                          {t.completed ? '✓' : ''}
-                        </span>
+                  {selectedTasks.length >
+                  0 ? (
+                    selectedTasks.map(
+                      (task) => (
+                        <button
+                          key={
+                            task.id
+                          }
+                          className={`task ${
+                            task.completed
+                              ? 'done'
+                              : ''
+                          }`}
+                          onClick={() =>
+                            toggle(
+                              task
+                            )
+                          }
+                        >
+                          <span className="taskCheck">
+                            {task.completed
+                              ? '✓'
+                              : ''}
+                          </span>
 
-                        <span className="taskBody">
-                          <small>
-                            {t.task_type} ·{' '}
-                            {t.resource}
-                          </small>
+                          <span className="taskBody">
+                            <small>
+                              {
+                                task.task_type
+                              }{' '}
+                              ·{' '}
+                              {
+                                task.resource
+                              }
+                            </small>
 
-                          <b>{t.title}</b>
+                            <b>
+                              {
+                                task.title
+                              }
+                            </b>
 
-                          <em>
-                            {t.description}
-                          </em>
-                        </span>
+                            <em>
+                              {
+                                task.description
+                              }
+                            </em>
+                          </span>
 
-                        <span>
-                          {t.estimated_minutes
-                            ? `${t.estimated_minutes}m`
-                            : ''}
-                        </span>
-                      </button>
-                    ))
+                          <span>
+                            {task.estimated_minutes
+                              ? `${task.estimated_minutes}m`
+                              : ''}
+                          </span>
+                        </button>
+                      )
+                    )
                   ) : (
-                    <p>No tasks for this date.</p>
+                    <p>
+                      No tasks for this date.
+                    </p>
                   )}
                 </div>
               </section>
 
+              {/* ---------- POMODORO ---------- */}
+
               <section className="card pomodoroCard">
                 <div className="sectionTitle">
-                  <h3>Pomodoro</h3>
-                  <span>{timerMode}</span>
+                  <h3>
+                    Pomodoro
+                  </h3>
+
+                  <span>
+                    {timerMode}
+                  </span>
                 </div>
 
                 <div className="timerRing">
                   <div>
                     <b>
                       {String(
-                        Math.floor(seconds / 60)
-                      ).padStart(2, '0')}
+                        Math.floor(
+                          seconds /
+                            60
+                        )
+                      ).padStart(
+                        2,
+                        '0'
+                      )}
                       :
                       {String(
-                        seconds % 60
-                      ).padStart(2, '0')}
+                        seconds %
+                          60
+                      ).padStart(
+                        2,
+                        '0'
+                      )}
                     </b>
 
                     <span>
@@ -1020,17 +1790,22 @@ export default function Home() {
                   <button
                     onClick={() =>
                       setRunning(
-                        (current) => !current
+                        (current) =>
+                          !current
                       )
                     }
                   >
-                    {running ? 'Pause' : 'Start'}
+                    {running
+                      ? 'Pause'
+                      : 'Start'}
                   </button>
 
                   <button
                     className="secondary"
                     onClick={() =>
-                      setTimer(timerMode)
+                      setTimer(
+                        timerMode
+                      )
                     }
                   >
                     Reset
@@ -1040,22 +1815,35 @@ export default function Home() {
                 <div className="timerFooter">
                   <label>
                     Focus
+
                     <input
                       type="number"
                       min="1"
-                      value={focusMin}
-                      onChange={(e) => {
+                      value={
+                        focusMin
+                      }
+                      onChange={(
+                        e
+                      ) => {
                         const value =
-                          Number(e.target.value) ||
-                          25
+                          Number(
+                            e.target
+                              .value
+                          ) || 25
 
-                        setFocusMin(value)
+                        setFocusMin(
+                          value
+                        )
 
                         if (
                           !running &&
-                          timerMode === 'Focus'
+                          timerMode ===
+                            'Focus'
                         ) {
-                          setSeconds(value * 60)
+                          setSeconds(
+                            value *
+                              60
+                          )
                         }
                       }}
                     />
@@ -1063,21 +1851,35 @@ export default function Home() {
 
                   <label>
                     Break
+
                     <input
                       type="number"
                       min="1"
-                      value={breakMin}
-                      onChange={(e) => {
+                      value={
+                        breakMin
+                      }
+                      onChange={(
+                        e
+                      ) => {
                         const value =
-                          Number(e.target.value) || 5
+                          Number(
+                            e.target
+                              .value
+                          ) || 5
 
-                        setBreakMin(value)
+                        setBreakMin(
+                          value
+                        )
 
                         if (
                           !running &&
-                          timerMode === 'Break'
+                          timerMode ===
+                            'Break'
                         ) {
-                          setSeconds(value * 60)
+                          setSeconds(
+                            value *
+                              60
+                          )
                         }
                       }}
                     />
@@ -1088,7 +1890,9 @@ export default function Home() {
                   <button
                     className="secondary"
                     onClick={() =>
-                      setTimer('Focus')
+                      setTimer(
+                        'Focus'
+                      )
                     }
                   >
                     Focus
@@ -1097,7 +1901,9 @@ export default function Home() {
                   <button
                     className="secondary"
                     onClick={() =>
-                      setTimer('Break')
+                      setTimer(
+                        'Break'
+                      )
                     }
                   >
                     Break
@@ -1108,49 +1914,101 @@ export default function Home() {
           </>
         )}
 
-        {tab === 'Calendar' && (
+        {/* ===================================================
+            CALENDAR
+            =================================================== */}
+
+        {tab ===
+          'Calendar' && (
           <section className="card">
             <div className="sectionTitle">
-              <h3>Plan Calendar</h3>
-              <span>Sep 19 → Jan 21</span>
+              <h3>
+                Plan Calendar
+              </h3>
+
+              <span>
+                Sep 19 → Jan 21
+              </span>
             </div>
 
             <div className="calendarList">
-              {schedule.map((r) => (
-                <button
-                  key={r.date}
-                  className={
-                    selected === r.date
-                      ? 'selectedRow'
-                      : ''
-                  }
-                  onClick={() => {
-                    setSelected(r.date)
-                    setTab('Today')
-                  }}
-                >
-                  <span>{fmt(r.date)}</span>
-                  <b>{r.phase}</b>
-                  <em>{r.assignment}</em>
-                  <strong>{r.hours}h</strong>
-                </button>
-              ))}
+              {schedule.map(
+                (r) => (
+                  <button
+                    key={
+                      r.date
+                    }
+                    className={
+                      selected ===
+                      r.date
+                        ? 'selectedRow'
+                        : ''
+                    }
+                    onClick={() => {
+                      setSelected(
+                        r.date
+                      )
+
+                      setTab(
+                        'Today'
+                      )
+                    }}
+                  >
+                    <span>
+                      {fmt(
+                        r.date
+                      )}
+                    </span>
+
+                    <b>
+                      {
+                        r.phase
+                      }
+                    </b>
+
+                    <em>
+                      {
+                        r.assignment
+                      }
+                    </em>
+
+                    <strong>
+                      {
+                        r.hours
+                      }
+                      h
+                    </strong>
+                  </button>
+                )
+              )}
             </div>
           </section>
         )}
 
-        {tab === 'Questions' && (
+        {/* ===================================================
+            QUESTIONS
+            =================================================== */}
+
+        {tab ===
+          'Questions' && (
           <div className="dashboardGrid">
+
             <form
               className="card formCard"
-              onSubmit={addQuestions}
+              onSubmit={
+                addQuestions
+              }
             >
-              <h3>Log Question Block</h3>
+              <h3>
+                Log Question Block
+              </h3>
 
               <input
                 name="date"
                 type="date"
-                defaultValue={todayISO()}
+                defaultValue={
+                  todayISO()
+                }
                 required
               />
 
@@ -1188,7 +2046,8 @@ export default function Home() {
                 <input
                   name="timed"
                   type="checkbox"
-                />{' '}
+                />
+
                 Timed block
               </label>
 
@@ -1198,45 +2057,80 @@ export default function Home() {
             </form>
 
             <section className="card">
-              <h3>Recent Blocks</h3>
+              <h3>
+                Recent Blocks
+              </h3>
 
               <div className="logList">
-                {qlogs.map((q) => (
-                  <div key={q.id}>
-                    <span>
-                      {q.question_date} ·{' '}
-                      {q.source} · {q.subject}
-                    </span>
+                {qlogs.map(
+                  (q) => (
+                    <div
+                      key={
+                        q.id
+                      }
+                    >
+                      <span>
+                        {
+                          q.question_date
+                        }{' '}
+                        ·{' '}
+                        {
+                          q.source
+                        }{' '}
+                        ·{' '}
+                        {
+                          q.subject
+                        }
+                      </span>
 
-                    <b>
-                      {q.correct_questions}/
-                      {q.total_questions} ·{' '}
-                      {Math.round(
-                        (100 *
-                          q.correct_questions) /
+                      <b>
+                        {
+                          q.correct_questions
+                        }
+                        /
+                        {
                           q.total_questions
-                      )}
-                      %
-                    </b>
-                  </div>
-                ))}
+                        }{' '}
+                        ·{' '}
+                        {Math.round(
+                          (100 *
+                            q.correct_questions) /
+                            q.total_questions
+                        )}
+                        %
+                      </b>
+                    </div>
+                  )
+                )}
               </div>
             </section>
           </div>
         )}
 
-        {tab === 'Full Lengths' && (
+        {/* ===================================================
+            FULL LENGTHS
+            =================================================== */}
+
+        {tab ===
+          'Full Lengths' && (
           <div className="dashboardGrid">
+
             <form
               className="card formCard"
-              onSubmit={addFL}
+              onSubmit={
+                addFL
+              }
             >
-              <h3>Log Full Length</h3>
+              <h3>
+                Log Full Length
+              </h3>
 
               <input
                 name="date"
                 type="date"
-                defaultValue={todayISO()}
+                defaultValue={
+                  todayISO()
+                }
                 required
               />
 
@@ -1284,31 +2178,58 @@ export default function Home() {
             </form>
 
             <section className="card">
-              <h3>Full-Length Scores</h3>
+              <h3>
+                Full-Length Scores
+              </h3>
 
               <div className="logList">
-                {fls.map((f) => (
-                  <div key={f.id}>
-                    <span>
-                      {f.exam_date} ·{' '}
-                      {f.exam_name}
-                    </span>
+                {fls.map(
+                  (f) => (
+                    <div
+                      key={
+                        f.id
+                      }
+                    >
+                      <span>
+                        {
+                          f.exam_date
+                        }{' '}
+                        ·{' '}
+                        {
+                          f.exam_name
+                        }
+                      </span>
 
-                    <b>{f.total_score}</b>
-                  </div>
-                ))}
+                      <b>
+                        {
+                          f.total_score
+                        }
+                      </b>
+                    </div>
+                  )
+                )}
               </div>
             </section>
           </div>
         )}
 
-        {tab === 'Analytics' && (
+        {/* ===================================================
+            ANALYTICS
+            =================================================== */}
+
+        {tab ===
+          'Analytics' && (
           <div className="dashboardGrid">
+
             <section className="card">
-              <h3>Study Time</h3>
+              <h3>
+                Study Time
+              </h3>
 
               <div className="bigStat">
-                {hoursText(weekActual)}
+                {hoursText(
+                  weekActual
+                )}
               </div>
 
               <p>
@@ -1316,7 +2237,9 @@ export default function Home() {
               </p>
 
               <div className="bigStat">
-                {hoursText(weekPlanned)}
+                {hoursText(
+                  weekPlanned
+                )}
               </div>
 
               <p>
@@ -1325,15 +2248,21 @@ export default function Home() {
             </section>
 
             <section className="card">
-              <h3>Question Accuracy</h3>
+              <h3>
+                Question Accuracy
+              </h3>
 
-              {qlogs.length ? (
+              {qlogs.length >
+              0 ? (
                 <>
                   <div className="bigStat">
                     {Math.round(
                       (100 *
                         qlogs.reduce(
-                          (sum, q) =>
+                          (
+                            sum,
+                            q
+                          ) =>
                             sum +
                             Number(
                               q.correct_questions
@@ -1341,7 +2270,10 @@ export default function Home() {
                           0
                         )) /
                         qlogs.reduce(
-                          (sum, q) =>
+                          (
+                            sum,
+                            q
+                          ) =>
                             sum +
                             Number(
                               q.total_questions
@@ -1355,7 +2287,10 @@ export default function Home() {
                   <p>
                     Across{' '}
                     {qlogs.reduce(
-                      (sum, q) =>
+                      (
+                        sum,
+                        q
+                      ) =>
                         sum +
                         Number(
                           q.total_questions
