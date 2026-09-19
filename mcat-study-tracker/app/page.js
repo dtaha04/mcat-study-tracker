@@ -30,7 +30,9 @@ const TASKS = (r) => {
   if (Number(r.questions) > 0) {
     a.push({
       type: 'Questions',
-      title: `${r.questions} ${r.question_subject || 'MCAT'} questions — timed + full review`,
+      title: `${r.questions} ${
+        r.question_subject || 'MCAT'
+      } questions — timed + full review`,
       resource: r.source || 'Question Bank',
       minutes:
         r.question_minutes ||
@@ -41,7 +43,9 @@ const TASKS = (r) => {
   if (Number(r.cars) > 0) {
     a.push({
       type: 'CARS',
-      title: `${r.cars} CARS passage${Number(r.cars) === 1 ? '' : 's'} — timed + review`,
+      title: `${r.cars} CARS passage${
+        Number(r.cars) === 1 ? '' : 's'
+      } — timed + review`,
       resource: r.cars_source || 'CARS',
       minutes: r.cars_minutes || Number(r.cars) * 20,
     })
@@ -81,13 +85,16 @@ const hoursText = (min) => {
   const h = Math.floor(min / 60)
   const m = min % 60
 
-  return h
-    ? `${h}h${m ? ` ${m}m` : ''}`
-    : `${m}m`
+  if (h) {
+    return `${h}h${m ? ` ${m}m` : ''}`
+  }
+
+  return `${m}m`
 }
 
 export default function Home() {
   const [session, setSession] = useState(null)
+
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [authMode, setAuthMode] = useState('signin')
@@ -100,6 +107,7 @@ export default function Home() {
   const [selected, setSelected] = useState(todayISO())
 
   const [loading, setLoading] = useState(true)
+  const [authLoading, setAuthLoading] = useState(false)
 
   const [qlogs, setQlogs] = useState([])
   const [fls, setFls] = useState([])
@@ -113,46 +121,38 @@ export default function Home() {
 
   const timerRef = useRef(null)
 
-  const planned = useMemo(
-    () =>
-      schedule.find((x) => x.date === selected) ||
-      schedule[0],
-    [selected]
-  )
+  const planned = useMemo(() => {
+    return schedule.find((x) => x.date === selected) || schedule[0]
+  }, [selected])
 
-  const selectedTasks = useMemo(
-    () =>
-      tasks
-        .filter((t) => t.task_date === selected)
-        .sort(
-          (a, b) =>
-            (a.sort_order || 0) -
-            (b.sort_order || 0)
-        ),
-    [tasks, selected]
-  )
+  const selectedTasks = useMemo(() => {
+    return tasks
+      .filter((t) => t.task_date === selected)
+      .sort(
+        (a, b) =>
+          (a.sort_order || 0) - (b.sort_order || 0)
+      )
+  }, [tasks, selected])
 
   const completed = selectedTasks.filter(
     (t) => t.completed
   ).length
 
   const pct = selectedTasks.length
-    ? Math.round(
-        (completed / selectedTasks.length) * 100
-      )
+    ? Math.round((completed / selectedTasks.length) * 100)
     : 0
 
   const plannedMinutes = selectedTasks.reduce(
-    (s, t) =>
-      s + (Number(t.estimated_minutes) || 0),
+    (sum, task) =>
+      sum + (Number(task.estimated_minutes) || 0),
     0
   )
 
   const actualMinutes = sessions
     .filter((s) => s.session_date === selected)
     .reduce(
-      (a, s) =>
-        a + (Number(s.actual_minutes) || 0),
+      (sum, s) =>
+        sum + (Number(s.actual_minutes) || 0),
       0
     )
 
@@ -182,18 +182,16 @@ export default function Home() {
   ).length
 
   const weekPlanned = weekTasks.reduce(
-    (s, t) =>
-      s + (Number(t.estimated_minutes) || 0),
+    (sum, task) =>
+      sum + (Number(task.estimated_minutes) || 0),
     0
   )
 
   const weekActual = sessions
-    .filter((s) =>
-      weekDates.includes(s.session_date)
-    )
+    .filter((s) => weekDates.includes(s.session_date))
     .reduce(
-      (a, s) =>
-        a + (Number(s.actual_minutes) || 0),
+      (sum, s) =>
+        sum + (Number(s.actual_minutes) || 0),
       0
     )
 
@@ -204,33 +202,54 @@ export default function Home() {
       return
     }
 
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
+    let mounted = true
+
+    async function getSession() {
+      const { data, error } = await supabase.auth.getSession()
+
+      if (!mounted) return
+
+      if (error) {
+        setMsg(error.message)
+      }
+
+      setSession(data?.session || null)
       setLoading(false)
-    })
+    }
+
+    getSession()
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      (_event, s) => {
-        setSession(s)
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (mounted) {
+        setSession(newSession)
       }
-    )
+    })
 
-    return () => subscription.unsubscribe()
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
     if (!session) return
 
     let channel
+    let cancelled = false
 
-    ;(async () => {
+    async function initialize() {
       await syncSchedule()
+
+      if (cancelled) return
+
       await loadAll()
 
+      if (cancelled) return
+
       channel = supabase
-        .channel('daily-task-changes')
+        .channel(`daily-task-changes-${session.user.id}`)
         .on(
           'postgres_changes',
           {
@@ -239,12 +258,18 @@ export default function Home() {
             table: 'daily_tasks',
             filter: `user_id=eq.${session.user.id}`,
           },
-          () => loadAll()
+          () => {
+            loadAll()
+          }
         )
         .subscribe()
-    })()
+    }
+
+    initialize()
 
     return () => {
+      cancelled = true
+
       if (channel) {
         supabase.removeChannel(channel)
       }
@@ -255,8 +280,8 @@ export default function Home() {
     if (!running) return
 
     timerRef.current = setInterval(() => {
-      setSeconds((s) => {
-        if (s <= 1) {
+      setSeconds((current) => {
+        if (current <= 1) {
           clearInterval(timerRef.current)
 
           setRunning(false)
@@ -265,34 +290,29 @@ export default function Home() {
             logSession(focusMin)
           }
 
-          const next =
-            timerMode === 'Focus'
-              ? 'Break'
-              : 'Focus'
+          const nextMode =
+            timerMode === 'Focus' ? 'Break' : 'Focus'
 
-          setTimerMode(next)
+          setTimerMode(nextMode)
 
           return (
-            (next === 'Focus'
-              ? focusMin
-              : breakMin) * 60
+            (nextMode === 'Focus' ? focusMin : breakMin) *
+            60
           )
         }
 
-        return s - 1
+        return current - 1
       })
     }, 1000)
 
-    return () =>
+    return () => {
       clearInterval(timerRef.current)
-  }, [
-    running,
-    timerMode,
-    focusMin,
-    breakMin,
-  ])
+    }
+  }, [running, timerMode, focusMin, breakMin])
 
   async function syncSchedule() {
+    if (!session) return
+
     const uid = session.user.id
 
     const {
@@ -311,41 +331,48 @@ export default function Home() {
       return
     }
 
-    if (marker?.length) return
-
     /*
-      One-time migration.
-
-      Only planned study_days and daily_tasks
-      from September 19 forward are replaced.
-
-      Question logs, Pomodoro sessions,
-      full-length scores, and dates before
-      September 19 are preserved.
+      If the new January 21 schedule has already
+      been installed, do nothing.
     */
 
-    let { error } = await supabase
+    if (marker?.length) {
+      return
+    }
+
+    /*
+      Remove only OLD PLANNED TASKS from
+      September 19 forward.
+
+      This does NOT delete:
+      - question logs
+      - Pomodoro sessions
+      - full-length scores
+      - older history before September 19
+    */
+
+    const { error: taskDeleteError } = await supabase
       .from('daily_tasks')
       .delete()
       .eq('user_id', uid)
       .gte('task_date', PLAN_START)
 
-    if (error) {
+    if (taskDeleteError) {
       setMsg(
-        `Schedule sync stopped: ${error.message}`
+        `Schedule sync stopped: ${taskDeleteError.message}`
       )
       return
     }
 
-    ;({ error } = await supabase
+    const { error: dayDeleteError } = await supabase
       .from('study_days')
       .delete()
       .eq('user_id', uid)
-      .gte('study_date', PLAN_START))
+      .gte('study_date', PLAN_START)
 
-    if (error) {
+    if (dayDeleteError) {
       setMsg(
-        `Schedule sync stopped: ${error.message}`
+        `Schedule sync stopped: ${dayDeleteError.message}`
       )
       return
     }
@@ -364,10 +391,8 @@ export default function Home() {
           user_id: uid,
           study_date: r.date,
           phase: r.phase || 'Study',
-          planned_hours:
-            Number(r.hours) || 0,
-          is_rest_day:
-            Number(r.hours) === 0,
+          planned_hours: Number(r.hours) || 0,
+          is_rest_day: Number(r.hours) === 0,
           is_full_length_day: isFL,
         })
         .select()
@@ -380,27 +405,23 @@ export default function Home() {
         return
       }
 
-      const rows = TASKS(r).map((t, i) => ({
+      const rows = TASKS(r).map((task, index) => ({
         user_id: uid,
         study_day_id: day.id,
         task_date: r.date,
-        task_type: t.type,
-        title: t.title,
-        description:
-          r.notes ||
-          r.assignment ||
-          '',
-        resource: t.resource,
-        estimated_minutes: t.minutes,
-        sort_order: i + 1,
+        task_type: task.type,
+        title: task.title,
+        description: r.notes || r.assignment || '',
+        resource: task.resource,
+        estimated_minutes: task.minutes,
+        sort_order: index + 1,
         completed: false,
         completed_at: null,
       }))
 
-      const { error: taskError } =
-        await supabase
-          .from('daily_tasks')
-          .insert(rows)
+      const { error: taskError } = await supabase
+        .from('daily_tasks')
+        .insert(rows)
 
       if (taskError) {
         setMsg(
@@ -410,9 +431,7 @@ export default function Home() {
       }
     }
 
-    setMsg(
-      'January 21 MCAT plan synced.'
-    )
+    setMsg('January 21 MCAT plan synced.')
   }
 
   async function loadAll() {
@@ -420,63 +439,56 @@ export default function Home() {
 
     const uid = session.user.id
 
-    const [t, d, q, f, se] =
-      await Promise.all([
-        supabase
-          .from('daily_tasks')
-          .select('*')
-          .eq('user_id', uid)
-          .order('task_date')
-          .order('sort_order'),
+    const [t, d, q, f, se] = await Promise.all([
+      supabase
+        .from('daily_tasks')
+        .select('*')
+        .eq('user_id', uid)
+        .order('task_date')
+        .order('sort_order'),
 
-        supabase
-          .from('study_days')
-          .select('*')
-          .eq('user_id', uid)
-          .order('study_date'),
+      supabase
+        .from('study_days')
+        .select('*')
+        .eq('user_id', uid)
+        .order('study_date'),
 
-        supabase
-          .from('question_blocks')
-          .select('*')
-          .eq('user_id', uid)
-          .order('question_date', {
-            ascending: false,
-          })
-          .limit(100),
+      supabase
+        .from('question_blocks')
+        .select('*')
+        .eq('user_id', uid)
+        .order('question_date', {
+          ascending: false,
+        })
+        .limit(100),
 
-        supabase
-          .from('full_length_scores')
-          .select('*')
-          .eq('user_id', uid)
-          .order('exam_date', {
-            ascending: false,
-          }),
+      supabase
+        .from('full_length_scores')
+        .select('*')
+        .eq('user_id', uid)
+        .order('exam_date', {
+          ascending: false,
+        }),
 
-        supabase
-          .from('study_sessions')
-          .select('*')
-          .eq('user_id', uid)
-          .order('session_date', {
-            ascending: false,
-          })
-          .limit(500),
-      ])
+      supabase
+        .from('study_sessions')
+        .select('*')
+        .eq('user_id', uid)
+        .order('session_date', {
+          ascending: false,
+        })
+        .limit(500),
+    ])
 
-    if (
+    const error =
       t.error ||
       d.error ||
       q.error ||
       f.error ||
       se.error
-    ) {
-      setMsg(
-        t.error?.message ||
-          d.error?.message ||
-          q.error?.message ||
-          f.error?.message ||
-          se.error?.message
-      )
 
+    if (error) {
+      setMsg(error.message)
       return
     }
 
@@ -502,21 +514,22 @@ export default function Home() {
 
     if (error) {
       setMsg(error.message)
-    } else {
-      setTasks((x) =>
-        x.map((t) =>
-          t.id === task.id
-            ? {
-                ...t,
-                completed,
-                completed_at: completed
-                  ? new Date().toISOString()
-                  : null,
-              }
-            : t
-        )
-      )
+      return
     }
+
+    setTasks((current) =>
+      current.map((t) =>
+        t.id === task.id
+          ? {
+              ...t,
+              completed,
+              completed_at: completed
+                ? new Date().toISOString()
+                : null,
+            }
+          : t
+      )
+    )
   }
 
   async function logSession(minutes) {
@@ -530,28 +543,24 @@ export default function Home() {
         actual_minutes: minutes,
         planned_minutes: minutes,
         session_type: 'Pomodoro',
-        ended_at:
-          new Date().toISOString(),
+        ended_at: new Date().toISOString(),
       })
 
     if (error) {
       setMsg(error.message)
-    } else {
-      loadAll()
+      return
     }
+
+    await loadAll()
   }
 
   async function addQuestions(e) {
     e.preventDefault()
 
-    const fd = new FormData(
-      e.currentTarget
-    )
+    const fd = new FormData(e.currentTarget)
 
     const total = Number(fd.get('total'))
-    const correct = Number(
-      fd.get('correct')
-    )
+    const correct = Number(fd.get('correct'))
 
     const { error } = await supabase
       .from('question_blocks')
@@ -562,24 +571,23 @@ export default function Home() {
         subject: fd.get('subject'),
         total_questions: total,
         correct_questions: correct,
-        timed:
-          fd.get('timed') === 'on',
+        timed: fd.get('timed') === 'on',
       })
 
     if (error) {
       setMsg(error.message)
-    } else {
-      e.currentTarget.reset()
-      loadAll()
+      return
     }
+
+    e.currentTarget.reset()
+
+    await loadAll()
   }
 
   async function addFL(e) {
     e.preventDefault()
 
-    const fd = new FormData(
-      e.currentTarget
-    )
+    const fd = new FormData(e.currentTarget)
 
     const cp = Number(fd.get('cp'))
     const cars = Number(fd.get('cars'))
@@ -596,36 +604,60 @@ export default function Home() {
         cars_score: cars,
         bb_score: bb,
         ps_score: ps,
-        total_score:
-          cp + cars + bb + ps,
+        total_score: cp + cars + bb + ps,
       })
 
     if (error) {
       setMsg(error.message)
-    } else {
-      e.currentTarget.reset()
-      loadAll()
+      return
     }
+
+    e.currentTarget.reset()
+
+    await loadAll()
   }
+
+  /*
+    FIXED LOGIN FUNCTION
+  */
 
   async function auth(e) {
     e.preventDefault()
 
     setMsg('')
+    setAuthLoading(true)
 
-    const fn =
-      authMode === 'signin'
-        ? supabase.auth
-            .signInWithPassword
-        : supabase.auth.signUp
+    try {
+      let result
 
-    const { error } = await fn({
-      email,
-      password,
-    })
+      if (authMode === 'signin') {
+        result = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        })
+      } else {
+        result = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+        })
+      }
 
-    if (error) {
-      setMsg(error.message)
+      if (result.error) {
+        setMsg(result.error.message)
+        return
+      }
+
+      if (result.data?.session) {
+        setSession(result.data.session)
+      } else if (authMode === 'signup') {
+        setMsg(
+          'Account created. Check your email if confirmation is required.'
+        )
+      }
+    } catch (error) {
+      setMsg(error?.message || 'Unable to sign in.')
+    } finally {
+      setAuthLoading(false)
     }
   }
 
@@ -634,18 +666,14 @@ export default function Home() {
     setTimerMode(kind)
 
     setSeconds(
-      (kind === 'Focus'
-        ? focusMin
-        : breakMin) * 60
+      (kind === 'Focus' ? focusMin : breakMin) * 60
     )
   }
 
   if (loading) {
     return (
       <main className="auth">
-        <div className="card">
-          Loading…
-        </div>
+        <div className="card">Loading…</div>
       </main>
     )
   }
@@ -659,32 +687,33 @@ export default function Home() {
         >
           <h1>MCAT Study Tracker</h1>
 
-          <p>
-            January 21, 2027 plan
-          </p>
+          <p>January 21, 2027 plan</p>
 
           <input
             type="email"
             placeholder="Email"
+            autoComplete="email"
             value={email}
-            onChange={(e) =>
-              setEmail(e.target.value)
-            }
+            onChange={(e) => setEmail(e.target.value)}
             required
           />
 
           <input
             type="password"
             placeholder="Password"
+            autoComplete="current-password"
             value={password}
-            onChange={(e) =>
-              setPassword(e.target.value)
-            }
+            onChange={(e) => setPassword(e.target.value)}
             required
           />
 
-          <button>
-            {authMode === 'signin'
+          <button
+            type="submit"
+            disabled={authLoading}
+          >
+            {authLoading
+              ? 'Signing in...'
+              : authMode === 'signin'
               ? 'Sign in'
               : 'Create account'}
           </button>
@@ -692,13 +721,15 @@ export default function Home() {
           <button
             type="button"
             className="secondary"
-            onClick={() =>
-              setAuthMode((x) =>
-                x === 'signin'
+            disabled={authLoading}
+            onClick={() => {
+              setMsg('')
+              setAuthMode((current) =>
+                current === 'signin'
                   ? 'signup'
                   : 'signin'
               )
-            }
+            }}
           >
             {authMode === 'signin'
               ? 'Need an account?'
@@ -706,26 +737,20 @@ export default function Home() {
           </button>
 
           {msg && (
-            <p className="message">
-              {msg}
-            </p>
+            <p className="message">{msg}</p>
           )}
         </form>
       </main>
     )
   }
 
-  const testDate = new Date(
-    '2027-01-21T12:00:00'
-  )
-
+  const testDate = new Date('2027-01-21T12:00:00')
   const now = new Date()
 
   const countdown = Math.max(
     0,
     Math.ceil(
-      (testDate - now) /
-        (1000 * 60 * 60 * 24)
+      (testDate - now) / (1000 * 60 * 60 * 24)
     )
   )
 
@@ -737,9 +762,7 @@ export default function Home() {
 
           <div>
             <b>MCAT</b>
-            <small>
-              STUDY TRACKER
-            </small>
+            <small>STUDY TRACKER</small>
           </div>
         </div>
 
@@ -753,14 +776,8 @@ export default function Home() {
           ].map((x) => (
             <button
               key={x}
-              className={
-                tab === x
-                  ? 'active'
-                  : ''
-              }
-              onClick={() =>
-                setTab(x)
-              }
+              className={tab === x ? 'active' : ''}
+              onClick={() => setTab(x)}
             >
               {x}
             </button>
@@ -775,9 +792,7 @@ export default function Home() {
 
         <button
           className="secondary"
-          onClick={() =>
-            supabase.auth.signOut()
-          }
+          onClick={() => supabase.auth.signOut()}
         >
           Sign out
         </button>
@@ -787,25 +802,17 @@ export default function Home() {
         <header className="header">
           <div>
             <h1>{tab}</h1>
-
-            <p>
-              {planned?.phase ||
-                'MCAT preparation'}
-            </p>
+            <p>{planned?.phase || 'MCAT preparation'}</p>
           </div>
 
           <div className="countdown">
             <b>{countdown}</b>
-            <span>
-              days to MCAT
-            </span>
+            <span>days to MCAT</span>
           </div>
         </header>
 
         {msg && (
-          <div className="message">
-            {msg}
-          </div>
+          <div className="message">{msg}</div>
         )}
 
         {tab === 'Today' && (
@@ -813,111 +820,80 @@ export default function Home() {
             <section className="card weekSummary">
               <div className="weekTitle">
                 <div>
-                  <small>
-                    THIS WEEK
-                  </small>
-
-                  <h2>
-                    Weekly Summary
-                  </h2>
+                  <small>THIS WEEK</small>
+                  <h2>Weekly Summary</h2>
                 </div>
 
                 <div className="weekStats">
                   <span>
-                    <b>
-                      {weekCompleted}
-                    </b>{' '}
-                    / {weekTasks.length}{' '}
-                    tasks
+                    <b>{weekCompleted}</b> /{' '}
+                    {weekTasks.length} tasks
                   </span>
 
                   <span>
-                    <b>
-                      {hoursText(
-                        weekActual
-                      )}
-                    </b>{' '}
+                    <b>{hoursText(weekActual)}</b>{' '}
                     focused
                   </span>
 
                   <span>
-                    <b>
-                      {hoursText(
-                        weekPlanned
-                      )}
-                    </b>{' '}
+                    <b>{hoursText(weekPlanned)}</b>{' '}
                     planned
                   </span>
                 </div>
               </div>
 
               <div className="weekDays">
-                {weekDates.map(
-                  (date) => {
-                    const dt =
-                      tasks.filter(
-                        (t) =>
-                          t.task_date ===
-                          date
-                      )
+                {weekDates.map((date) => {
+                  const dt = tasks.filter(
+                    (t) => t.task_date === date
+                  )
 
-                    const done =
-                      dt.filter(
-                        (t) =>
-                          t.completed
-                      ).length
+                  const done = dt.filter(
+                    (t) => t.completed
+                  ).length
 
-                    return (
-                      <button
-                        key={date}
-                        className={
-                          selected ===
-                          date
-                            ? 'selected'
-                            : ''
-                        }
-                        onClick={() =>
-                          setSelected(
-                            date
-                          )
-                        }
-                      >
-                        <small>
-                          {new Date(
-                            `${date}T12:00:00`
-                          ).toLocaleDateString(
-                            undefined,
-                            {
-                              weekday:
-                                'short',
-                            }
-                          )}
-                        </small>
+                  return (
+                    <button
+                      key={date}
+                      className={
+                        selected === date
+                          ? 'selected'
+                          : ''
+                      }
+                      onClick={() => setSelected(date)}
+                    >
+                      <small>
+                        {new Date(
+                          `${date}T12:00:00`
+                        ).toLocaleDateString(
+                          undefined,
+                          {
+                            weekday: 'short',
+                          }
+                        )}
+                      </small>
 
-                        <b>
-                          {new Date(
-                            `${date}T12:00:00`
-                          ).getDate()}
-                        </b>
+                      <b>
+                        {new Date(
+                          `${date}T12:00:00`
+                        ).getDate()}
+                      </b>
 
-                        <span>
-                          {dt.length
-                            ? `${done}/${dt.length}`
-                            : '—'}
-                        </span>
-                      </button>
-                    )
-                  }
-                )}
+                      <span>
+                        {dt.length
+                          ? `${done}/${dt.length}`
+                          : '—'}
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
             </section>
 
             <div className="todayHeading">
               <div>
                 <small>
-                  {fmt(
-                    selected
-                  ).toUpperCase()}
+                  {fmt(selected).toUpperCase()}
                 </small>
 
                 <h2>
@@ -925,33 +901,21 @@ export default function Home() {
                     'Study Plan'}
                 </h2>
 
-                <p>
-                  {planned?.notes}
-                </p>
+                <p>{planned?.notes}</p>
               </div>
 
               <div className="todayMetrics">
                 <span>
-                  <small>
-                    PLANNED
-                  </small>
-
+                  <small>PLANNED</small>
                   <b>
-                    {hoursText(
-                      plannedMinutes
-                    )}
+                    {hoursText(plannedMinutes)}
                   </b>
                 </span>
 
                 <span>
-                  <small>
-                    FOCUSED
-                  </small>
-
+                  <small>FOCUSED</small>
                   <b>
-                    {hoursText(
-                      actualMinutes
-                    )}
+                    {hoursText(actualMinutes)}
                   </b>
                 </span>
               </div>
@@ -959,22 +923,15 @@ export default function Home() {
 
             <section className="card progressCard">
               <div>
-                <b>
-                  Daily progress
-                </b>
+                <b>Daily progress</b>
 
                 <span>
                   {completed} of{' '}
-                  {
-                    selectedTasks.length
-                  }{' '}
-                  complete
+                  {selectedTasks.length} complete
                 </span>
               </div>
 
-              <strong>
-                {pct}%
-              </strong>
+              <strong>{pct}%</strong>
 
               <div className="progress">
                 <i
@@ -988,107 +945,69 @@ export default function Home() {
             <div className="dashboardGrid">
               <section className="card">
                 <div className="sectionTitle">
-                  <h3>
-                    Today's Checklist
-                  </h3>
+                  <h3>Today's Checklist</h3>
 
                   <span>
-                    {
-                      selectedTasks.length
-                    }{' '}
-                    tasks
+                    {selectedTasks.length} tasks
                   </span>
                 </div>
 
                 <div className="taskList">
                   {selectedTasks.length ? (
-                    selectedTasks.map(
-                      (t) => (
-                        <button
-                          key={t.id}
-                          className={`task ${
-                            t.completed
-                              ? 'done'
-                              : ''
-                          }`}
-                          onClick={() =>
-                            toggle(t)
-                          }
-                        >
-                          <span className="taskCheck">
-                            {t.completed
-                              ? '✓'
-                              : ''}
-                          </span>
+                    selectedTasks.map((t) => (
+                      <button
+                        key={t.id}
+                        className={`task ${
+                          t.completed ? 'done' : ''
+                        }`}
+                        onClick={() => toggle(t)}
+                      >
+                        <span className="taskCheck">
+                          {t.completed ? '✓' : ''}
+                        </span>
 
-                          <span className="taskBody">
-                            <small>
-                              {
-                                t.task_type
-                              }{' '}
-                              ·{' '}
-                              {
-                                t.resource
-                              }
-                            </small>
+                        <span className="taskBody">
+                          <small>
+                            {t.task_type} ·{' '}
+                            {t.resource}
+                          </small>
 
-                            <b>
-                              {t.title}
-                            </b>
+                          <b>{t.title}</b>
 
-                            <em>
-                              {
-                                t.description
-                              }
-                            </em>
-                          </span>
+                          <em>
+                            {t.description}
+                          </em>
+                        </span>
 
-                          <span>
-                            {t.estimated_minutes
-                              ? `${t.estimated_minutes}m`
-                              : ''}
-                          </span>
-                        </button>
-                      )
-                    )
+                        <span>
+                          {t.estimated_minutes
+                            ? `${t.estimated_minutes}m`
+                            : ''}
+                        </span>
+                      </button>
+                    ))
                   ) : (
-                    <p>
-                      No tasks for this
-                      date.
-                    </p>
+                    <p>No tasks for this date.</p>
                   )}
                 </div>
               </section>
 
               <section className="card pomodoroCard">
                 <div className="sectionTitle">
-                  <h3>
-                    Pomodoro
-                  </h3>
-
-                  <span>
-                    {timerMode}
-                  </span>
+                  <h3>Pomodoro</h3>
+                  <span>{timerMode}</span>
                 </div>
 
                 <div className="timerRing">
                   <div>
                     <b>
                       {String(
-                        Math.floor(
-                          seconds / 60
-                        )
-                      ).padStart(
-                        2,
-                        '0'
-                      )}
+                        Math.floor(seconds / 60)
+                      ).padStart(2, '0')}
                       :
                       {String(
                         seconds % 60
-                      ).padStart(
-                        2,
-                        '0'
-                      )}
+                      ).padStart(2, '0')}
                     </b>
 
                     <span>
@@ -1101,21 +1020,17 @@ export default function Home() {
                   <button
                     onClick={() =>
                       setRunning(
-                        (x) => !x
+                        (current) => !current
                       )
                     }
                   >
-                    {running
-                      ? 'Pause'
-                      : 'Start'}
+                    {running ? 'Pause' : 'Start'}
                   </button>
 
                   <button
                     className="secondary"
                     onClick={() =>
-                      setTimer(
-                        timerMode
-                      )
+                      setTimer(timerMode)
                     }
                   >
                     Reset
@@ -1125,30 +1040,22 @@ export default function Home() {
                 <div className="timerFooter">
                   <label>
                     Focus
-
                     <input
                       type="number"
                       min="1"
                       value={focusMin}
                       onChange={(e) => {
                         const value =
-                          Number(
-                            e.target
-                              .value
-                          ) || 25
+                          Number(e.target.value) ||
+                          25
 
-                        setFocusMin(
-                          value
-                        )
+                        setFocusMin(value)
 
                         if (
                           !running &&
-                          timerMode ===
-                            'Focus'
+                          timerMode === 'Focus'
                         ) {
-                          setSeconds(
-                            value * 60
-                          )
+                          setSeconds(value * 60)
                         }
                       }}
                     />
@@ -1156,30 +1063,21 @@ export default function Home() {
 
                   <label>
                     Break
-
                     <input
                       type="number"
                       min="1"
                       value={breakMin}
                       onChange={(e) => {
                         const value =
-                          Number(
-                            e.target
-                              .value
-                          ) || 5
+                          Number(e.target.value) || 5
 
-                        setBreakMin(
-                          value
-                        )
+                        setBreakMin(value)
 
                         if (
                           !running &&
-                          timerMode ===
-                            'Break'
+                          timerMode === 'Break'
                         ) {
-                          setSeconds(
-                            value * 60
-                          )
+                          setSeconds(value * 60)
                         }
                       }}
                     />
@@ -1190,9 +1088,7 @@ export default function Home() {
                   <button
                     className="secondary"
                     onClick={() =>
-                      setTimer(
-                        'Focus'
-                      )
+                      setTimer('Focus')
                     }
                   >
                     Focus
@@ -1201,9 +1097,7 @@ export default function Home() {
                   <button
                     className="secondary"
                     onClick={() =>
-                      setTimer(
-                        'Break'
-                      )
+                      setTimer('Break')
                     }
                   >
                     Break
@@ -1217,13 +1111,8 @@ export default function Home() {
         {tab === 'Calendar' && (
           <section className="card">
             <div className="sectionTitle">
-              <h3>
-                Plan Calendar
-              </h3>
-
-              <span>
-                Sep 19 → Jan 21
-              </span>
+              <h3>Plan Calendar</h3>
+              <span>Sep 19 → Jan 21</span>
             </div>
 
             <div className="calendarList">
@@ -1231,33 +1120,19 @@ export default function Home() {
                 <button
                   key={r.date}
                   className={
-                    selected ===
-                    r.date
+                    selected === r.date
                       ? 'selectedRow'
                       : ''
                   }
                   onClick={() => {
-                    setSelected(
-                      r.date
-                    )
+                    setSelected(r.date)
                     setTab('Today')
                   }}
                 >
-                  <span>
-                    {fmt(r.date)}
-                  </span>
-
-                  <b>
-                    {r.phase}
-                  </b>
-
-                  <em>
-                    {r.assignment}
-                  </em>
-
-                  <strong>
-                    {r.hours}h
-                  </strong>
+                  <span>{fmt(r.date)}</span>
+                  <b>{r.phase}</b>
+                  <em>{r.assignment}</em>
+                  <strong>{r.hours}h</strong>
                 </button>
               ))}
             </div>
@@ -1270,9 +1145,7 @@ export default function Home() {
               className="card formCard"
               onSubmit={addQuestions}
             >
-              <h3>
-                Log Question Block
-              </h3>
+              <h3>Log Question Block</h3>
 
               <input
                 name="date"
@@ -1319,34 +1192,25 @@ export default function Home() {
                 Timed block
               </label>
 
-              <button>
+              <button type="submit">
                 Save block
               </button>
             </form>
 
             <section className="card">
-              <h3>
-                Recent Blocks
-              </h3>
+              <h3>Recent Blocks</h3>
 
               <div className="logList">
                 {qlogs.map((q) => (
                   <div key={q.id}>
                     <span>
-                      {q.question_date}{' '}
-                      · {q.source} ·{' '}
-                      {q.subject}
+                      {q.question_date} ·{' '}
+                      {q.source} · {q.subject}
                     </span>
 
                     <b>
-                      {
-                        q.correct_questions
-                      }
-                      /
-                      {
-                        q.total_questions
-                      }{' '}
-                      ·{' '}
+                      {q.correct_questions}/
+                      {q.total_questions} ·{' '}
                       {Math.round(
                         (100 *
                           q.correct_questions) /
@@ -1367,9 +1231,7 @@ export default function Home() {
               className="card formCard"
               onSubmit={addFL}
             >
-              <h3>
-                Log Full Length
-              </h3>
+              <h3>Log Full Length</h3>
 
               <input
                 name="date"
@@ -1416,15 +1278,13 @@ export default function Home() {
                 />
               </div>
 
-              <button>
+              <button type="submit">
                 Save score
               </button>
             </form>
 
             <section className="card">
-              <h3>
-                Full-Length Scores
-              </h3>
+              <h3>Full-Length Scores</h3>
 
               <div className="logList">
                 {fls.map((f) => (
@@ -1434,9 +1294,7 @@ export default function Home() {
                       {f.exam_name}
                     </span>
 
-                    <b>
-                      {f.total_score}
-                    </b>
+                    <b>{f.total_score}</b>
                   </div>
                 ))}
               </div>
@@ -1447,37 +1305,27 @@ export default function Home() {
         {tab === 'Analytics' && (
           <div className="dashboardGrid">
             <section className="card">
-              <h3>
-                Study Time
-              </h3>
+              <h3>Study Time</h3>
 
               <div className="bigStat">
-                {hoursText(
-                  weekActual
-                )}
+                {hoursText(weekActual)}
               </div>
 
               <p>
-                Focused this
-                selected week
+                Focused this selected week
               </p>
 
               <div className="bigStat">
-                {hoursText(
-                  weekPlanned
-                )}
+                {hoursText(weekPlanned)}
               </div>
 
               <p>
-                Planned this
-                selected week
+                Planned this selected week
               </p>
             </section>
 
             <section className="card">
-              <h3>
-                Question Accuracy
-              </h3>
+              <h3>Question Accuracy</h3>
 
               {qlogs.length ? (
                 <>
@@ -1485,16 +1333,16 @@ export default function Home() {
                     {Math.round(
                       (100 *
                         qlogs.reduce(
-                          (a, q) =>
-                            a +
+                          (sum, q) =>
+                            sum +
                             Number(
                               q.correct_questions
                             ),
                           0
                         )) /
                         qlogs.reduce(
-                          (a, q) =>
-                            a +
+                          (sum, q) =>
+                            sum +
                             Number(
                               q.total_questions
                             ),
@@ -1507,8 +1355,8 @@ export default function Home() {
                   <p>
                     Across{' '}
                     {qlogs.reduce(
-                      (a, q) =>
-                        a +
+                      (sum, q) =>
+                        sum +
                         Number(
                           q.total_questions
                         ),
@@ -1519,8 +1367,7 @@ export default function Home() {
                 </>
               ) : (
                 <p>
-                  No question blocks
-                  logged yet.
+                  No question blocks logged yet.
                 </p>
               )}
             </section>
