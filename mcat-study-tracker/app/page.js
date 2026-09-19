@@ -1,845 +1,1393 @@
 'use client'
 
-import {useEffect,useMemo,useRef,useState} from 'react'
-import {supabase} from '../lib/supabase'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from '../lib/supabase'
 import schedule from '../data/schedule.json'
 
-const fmt=d=>new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})
-const todayISO=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+const fmt = (d) =>
+  new Date(`${d}T12:00:00`).toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  })
 
-const TASKS=(r)=>{
-  const a=[]
-  if(r.anki && !/rest/i.test(r.anki)) a.push({type:'Anki',title:r.anki,resource:'Anki'})
-  if(r.questions>0) a.push({type:'Questions',title:`${r.questions} science/P-S questions + full review`,resource:r.source})
-  if(r.cars>0) a.push({type:'CARS',title:`${r.cars} CARS passage${r.cars>1?'s':''} + review`,resource:/AAMC/i.test(r.source)?'AAMC':'Jack Westin'})
-  if(r.content && !/none|rest/i.test(r.content)) a.push({type:'Content',title:r.content,resource:'Targeted review'})
-  if(!a.length) a.push({type:'Rest',title:'Recovery / rest day',resource:'Recovery'})
+const todayISO = () => new Date().toLocaleDateString('en-CA')
+
+const PLAN_START = schedule[0]?.date || '2026-09-19'
+
+const TASKS = (r) => {
+  const a = []
+
+  if (r.anki && !/none|rest/i.test(r.anki)) {
+    a.push({
+      type: 'Anki',
+      title: r.anki,
+      resource: 'Anki',
+      minutes: r.anki_minutes || 35,
+    })
+  }
+
+  if (Number(r.questions) > 0) {
+    a.push({
+      type: 'Questions',
+      title: `${r.questions} ${r.question_subject || 'MCAT'} questions — timed + full review`,
+      resource: r.source || 'Question Bank',
+      minutes:
+        r.question_minutes ||
+        Math.max(30, Number(r.questions) * 3),
+    })
+  }
+
+  if (Number(r.cars) > 0) {
+    a.push({
+      type: 'CARS',
+      title: `${r.cars} CARS passage${Number(r.cars) === 1 ? '' : 's'} — timed + review`,
+      resource: r.cars_source || 'CARS',
+      minutes: r.cars_minutes || Number(r.cars) * 20,
+    })
+  }
+
+  if (r.recall && !/none/i.test(r.recall)) {
+    a.push({
+      type: 'Content',
+      title: r.recall,
+      resource: 'Daily Recall',
+      minutes: r.recall_minutes || 20,
+    })
+  }
+
+  if (r.content && !/none|rest/i.test(r.content)) {
+    a.push({
+      type: 'Content',
+      title: r.content,
+      resource: 'Targeted Repair',
+      minutes: r.content_minutes || 25,
+    })
+  }
+
+  if (!a.length) {
+    a.push({
+      type: 'Rest',
+      title: r.assignment || 'Recovery / no scheduled studying',
+      resource: 'Plan',
+      minutes: 0,
+    })
+  }
+
   return a
 }
 
-const hoursText=min=>{
-  if(!min) return '0m'
-  const h=Math.floor(min/60)
-  const m=min%60
-  return h ? `${h}h ${m ? `${m}m` : ''}` : `${m}m`
+const hoursText = (min) => {
+  const h = Math.floor(min / 60)
+  const m = min % 60
+
+  return h
+    ? `${h}h${m ? ` ${m}m` : ''}`
+    : `${m}m`
 }
 
-export default function Home(){
-  const [session,setSession]=useState(null)
-  const [authMode,setAuthMode]=useState('login')
-  const [msg,setMsg]=useState('')
-  const [tab,setTab]=useState('Today')
-  const [tasks,setTasks]=useState([])
-  const [days,setDays]=useState([])
-  const [selected,setSelected]=useState(todayISO())
-  const [loading,setLoading]=useState(true)
-  const [qlogs,setQlogs]=useState([])
-  const [fls,setFls]=useState([])
-  const [sessions,setSessions]=useState([])
-  const [seconds,setSeconds]=useState(50*60)
-  const [running,setRunning]=useState(false)
-  const [focusMin,setFocusMin]=useState(50)
-  const [breakMin,setBreakMin]=useState(10)
-  const [timerMode,setTimerMode]=useState('Focus')
-  const timer=useRef(null)
+export default function Home() {
+  const [session, setSession] = useState(null)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [authMode, setAuthMode] = useState('signin')
+  const [msg, setMsg] = useState('')
 
-  const planned=useMemo(()=>schedule.find(x=>x.date===selected)||schedule[0],[selected])
+  const [tab, setTab] = useState('Today')
 
-  useEffect(()=>{
-    if(!supabase){
+  const [tasks, setTasks] = useState([])
+  const [days, setDays] = useState([])
+  const [selected, setSelected] = useState(todayISO())
+
+  const [loading, setLoading] = useState(true)
+
+  const [qlogs, setQlogs] = useState([])
+  const [fls, setFls] = useState([])
+  const [sessions, setSessions] = useState([])
+
+  const [seconds, setSeconds] = useState(25 * 60)
+  const [running, setRunning] = useState(false)
+  const [focusMin, setFocusMin] = useState(25)
+  const [breakMin, setBreakMin] = useState(5)
+  const [timerMode, setTimerMode] = useState('Focus')
+
+  const timerRef = useRef(null)
+
+  const planned = useMemo(
+    () =>
+      schedule.find((x) => x.date === selected) ||
+      schedule[0],
+    [selected]
+  )
+
+  const selectedTasks = useMemo(
+    () =>
+      tasks
+        .filter((t) => t.task_date === selected)
+        .sort(
+          (a, b) =>
+            (a.sort_order || 0) -
+            (b.sort_order || 0)
+        ),
+    [tasks, selected]
+  )
+
+  const completed = selectedTasks.filter(
+    (t) => t.completed
+  ).length
+
+  const pct = selectedTasks.length
+    ? Math.round(
+        (completed / selectedTasks.length) * 100
+      )
+    : 0
+
+  const plannedMinutes = selectedTasks.reduce(
+    (s, t) =>
+      s + (Number(t.estimated_minutes) || 0),
+    0
+  )
+
+  const actualMinutes = sessions
+    .filter((s) => s.session_date === selected)
+    .reduce(
+      (a, s) =>
+        a + (Number(s.actual_minutes) || 0),
+      0
+    )
+
+  const weekDates = useMemo(() => {
+    const base = new Date(`${selected}T12:00:00`)
+    const monday = new Date(base)
+
+    const shift = (base.getDay() + 6) % 7
+
+    monday.setDate(base.getDate() - shift)
+
+    return Array.from({ length: 7 }, (_, i) => {
+      const x = new Date(monday)
+
+      x.setDate(monday.getDate() + i)
+
+      return x.toLocaleDateString('en-CA')
+    })
+  }, [selected])
+
+  const weekTasks = tasks.filter((t) =>
+    weekDates.includes(t.task_date)
+  )
+
+  const weekCompleted = weekTasks.filter(
+    (t) => t.completed
+  ).length
+
+  const weekPlanned = weekTasks.reduce(
+    (s, t) =>
+      s + (Number(t.estimated_minutes) || 0),
+    0
+  )
+
+  const weekActual = sessions
+    .filter((s) =>
+      weekDates.includes(s.session_date)
+    )
+    .reduce(
+      (a, s) =>
+        a + (Number(s.actual_minutes) || 0),
+      0
+    )
+
+  useEffect(() => {
+    if (!supabase) {
+      setMsg('Supabase is not configured.')
       setLoading(false)
-      setMsg('Supabase environment variables are missing.')
       return
     }
-    supabase.auth.getSession().then(({data})=>{
+
+    supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
       setLoading(false)
     })
-    const {data:{subscription}}=supabase.auth.onAuthStateChange((_e,s)=>setSession(s))
-    return()=>subscription.unsubscribe()
-  },[])
 
-  useEffect(()=>{
-    if(session){
-      seed()
-      loadAll()
-      const ch=supabase.channel('mcat-sync')
-        .on('postgres_changes',{event:'*',schema:'public',table:'daily_tasks',filter:`user_id=eq.${session.user.id}`},()=>loadAll())
-        .subscribe()
-      return()=>supabase.removeChannel(ch)
-    }
-  },[session])
-
-  useEffect(()=>{
-    if(running){
-      timer.current=setInterval(()=>setSeconds(s=>{
-        if(s<=1){
-          setRunning(false)
-          clearInterval(timer.current)
-          if(timerMode==='Focus'){
-            logSession(focusMin)
-            setTimerMode('Break')
-            return breakMin*60
-          }else{
-            setTimerMode('Focus')
-            return focusMin*60
-          }
-        }
-        return s-1
-      }),1000)
-    }
-    return()=>clearInterval(timer.current)
-  },[running,timerMode,focusMin,breakMin])
-
-  async function auth(e){
-    e.preventDefault()
-    setMsg('')
-    const fd=new FormData(e.currentTarget)
-    const email=fd.get('email'),password=fd.get('password')
-    const res=authMode==='login'
-      ? await supabase.auth.signInWithPassword({email,password})
-      : await supabase.auth.signUp({email,password})
-    setMsg(res.error?res.error.message:(authMode==='signup'&&!res.data.session?'Check your email to confirm your account.':''))
-  }
-
-  async function seed(){
-    const uid=session.user.id
-
-    // Detect old April 2027 schedule.
-    const {count:oldPlanCount,error:oldPlanError}=await supabase
-      .from('study_days')
-      .select('*',{count:'exact',head:true})
-      .eq('user_id',uid)
-      .gt('study_date','2027-01-29')
-
-    if(oldPlanError){
-      setMsg(oldPlanError.message)
-      return
-    }
-
-    // Remove ONLY old scheduled study days/tasks.
-    // Question logs, FL scores, and study sessions remain untouched.
-    if(oldPlanCount>0){
-      const {error:taskDeleteError}=await supabase
-        .from('daily_tasks')
-        .delete()
-        .eq('user_id',uid)
-        .gte('task_date','2026-09-16')
-
-      if(taskDeleteError){
-        setMsg(taskDeleteError.message)
-        return
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (_event, s) => {
+        setSession(s)
       }
-
-      const {error:dayDeleteError}=await supabase
-        .from('study_days')
-        .delete()
-        .eq('user_id',uid)
-        .gte('study_date','2026-09-16')
-
-      if(dayDeleteError){
-        setMsg(dayDeleteError.message)
-        return
-      }
-    }
-
-    // Don't seed twice.
-    const {count,error:countError}=await supabase
-      .from('study_days')
-      .select('*',{count:'exact',head:true})
-      .eq('user_id',uid)
-      .gte('study_date','2026-09-16')
-      .lte('study_date','2027-01-29')
-
-    if(countError){
-      setMsg(countError.message)
-      return
-    }
-
-    if(count>0)return
-
-    const dayRows=schedule.map(r=>({
-      user_id:uid,
-      study_date:r.date,
-      phase:r.phase,
-      planned_hours:r.hours,
-      is_rest_day:TASKS(r)[0]?.type==='Rest',
-      is_full_length_day:/full.?length|FL/i.test(r.assignment+' '+r.notes)
-    }))
-
-    const {data:inserted,error}=await supabase
-      .from('study_days')
-      .insert(dayRows)
-      .select()
-
-    if(error){
-      setMsg(error.message)
-      return
-    }
-
-    const map=Object.fromEntries(
-      inserted.map(d=>[d.study_date,d.id])
     )
 
-    let taskRows=[]
+    return () => subscription.unsubscribe()
+  }, [])
 
-    schedule.forEach(r=>TASKS(r).forEach((t,i)=>taskRows.push({
-      user_id:uid,
-      study_day_id:map[r.date],
-      task_date:r.date,
-      task_type:t.type,
-      title:t.title,
-      description:r.assignment,
-      resource:t.resource,
-      estimated_minutes:Math.max(
-        15,
-        Math.round((r.hours*60)/TASKS(r).length)
-      ),
-      sort_order:i
-    })))
+  useEffect(() => {
+    if (!session) return
 
-    for(let i=0;i<taskRows.length;i+=500){
-      const {error}=await supabase
-        .from('daily_tasks')
-        .insert(taskRows.slice(i,i+500))
+    let channel
 
-      if(error){
-        setMsg(error.message)
+    ;(async () => {
+      await syncSchedule()
+      await loadAll()
+
+      channel = supabase
+        .channel('daily-task-changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'daily_tasks',
+            filter: `user_id=eq.${session.user.id}`,
+          },
+          () => loadAll()
+        )
+        .subscribe()
+    })()
+
+    return () => {
+      if (channel) {
+        supabase.removeChannel(channel)
+      }
+    }
+  }, [session])
+
+  useEffect(() => {
+    if (!running) return
+
+    timerRef.current = setInterval(() => {
+      setSeconds((s) => {
+        if (s <= 1) {
+          clearInterval(timerRef.current)
+
+          setRunning(false)
+
+          if (timerMode === 'Focus') {
+            logSession(focusMin)
+          }
+
+          const next =
+            timerMode === 'Focus'
+              ? 'Break'
+              : 'Focus'
+
+          setTimerMode(next)
+
+          return (
+            (next === 'Focus'
+              ? focusMin
+              : breakMin) * 60
+          )
+        }
+
+        return s - 1
+      })
+    }, 1000)
+
+    return () =>
+      clearInterval(timerRef.current)
+  }, [
+    running,
+    timerMode,
+    focusMin,
+    breakMin,
+  ])
+
+  async function syncSchedule() {
+    const uid = session.user.id
+
+    const {
+      data: marker,
+      error: markerError,
+    } = await supabase
+      .from('daily_tasks')
+      .select('id')
+      .eq('user_id', uid)
+      .eq('task_date', PLAN_START)
+      .eq('resource', 'Daily Recall')
+      .limit(1)
+
+    if (markerError) {
+      setMsg(markerError.message)
+      return
+    }
+
+    if (marker?.length) return
+
+    /*
+      One-time migration.
+
+      Only planned study_days and daily_tasks
+      from September 19 forward are replaced.
+
+      Question logs, Pomodoro sessions,
+      full-length scores, and dates before
+      September 19 are preserved.
+    */
+
+    let { error } = await supabase
+      .from('daily_tasks')
+      .delete()
+      .eq('user_id', uid)
+      .gte('task_date', PLAN_START)
+
+    if (error) {
+      setMsg(
+        `Schedule sync stopped: ${error.message}`
+      )
+      return
+    }
+
+    ;({ error } = await supabase
+      .from('study_days')
+      .delete()
+      .eq('user_id', uid)
+      .gte('study_date', PLAN_START))
+
+    if (error) {
+      setMsg(
+        `Schedule sync stopped: ${error.message}`
+      )
+      return
+    }
+
+    for (const r of schedule) {
+      const isFL = /full.?length/i.test(
+        `${r.assignment || ''} ${r.source || ''}`
+      )
+
+      const {
+        data: day,
+        error: dayError,
+      } = await supabase
+        .from('study_days')
+        .insert({
+          user_id: uid,
+          study_date: r.date,
+          phase: r.phase || 'Study',
+          planned_hours:
+            Number(r.hours) || 0,
+          is_rest_day:
+            Number(r.hours) === 0,
+          is_full_length_day: isFL,
+        })
+        .select()
+        .single()
+
+      if (dayError) {
+        setMsg(
+          `Could not add ${r.date}: ${dayError.message}`
+        )
+        return
+      }
+
+      const rows = TASKS(r).map((t, i) => ({
+        user_id: uid,
+        study_day_id: day.id,
+        task_date: r.date,
+        task_type: t.type,
+        title: t.title,
+        description:
+          r.notes ||
+          r.assignment ||
+          '',
+        resource: t.resource,
+        estimated_minutes: t.minutes,
+        sort_order: i + 1,
+        completed: false,
+        completed_at: null,
+      }))
+
+      const { error: taskError } =
+        await supabase
+          .from('daily_tasks')
+          .insert(rows)
+
+      if (taskError) {
+        setMsg(
+          `Could not add tasks for ${r.date}: ${taskError.message}`
+        )
         return
       }
     }
 
-    await loadAll()
+    setMsg(
+      'January 21 MCAT plan synced.'
+    )
   }
 
-  async function loadAll(){
-    const uid=session.user.id
-    const [t,d,q,f,se]=await Promise.all([
-      supabase.from('daily_tasks').select('*').eq('user_id',uid).order('task_date').order('sort_order'),
-      supabase.from('study_days').select('*').eq('user_id',uid).order('study_date'),
-      supabase.from('question_blocks').select('*').eq('user_id',uid).order('question_date',{ascending:false}).limit(100),
-      supabase.from('full_length_scores').select('*').eq('user_id',uid).order('exam_date'),
-      supabase.from('study_sessions').select('*').eq('user_id',uid).order('session_date',{ascending:false}).limit(300)
-    ])
+  async function loadAll() {
+    if (!session) return
 
-    setTasks(t.data||[])
-    setDays(d.data||[])
-    setQlogs(q.data||[])
-    setFls(f.data||[])
-    setSessions(se.data||[])
-  }
+    const uid = session.user.id
 
-  async function toggle(t){
-    await supabase.from('daily_tasks').update({
-      completed:!t.completed,
-      completed_at:!t.completed?new Date().toISOString():null
-    }).eq('id',t.id)
-    loadAll()
-  }
+    const [t, d, q, f, se] =
+      await Promise.all([
+        supabase
+          .from('daily_tasks')
+          .select('*')
+          .eq('user_id', uid)
+          .order('task_date')
+          .order('sort_order'),
 
-  async function logSession(min){
-    if(!session)return
-    await supabase.from('study_sessions').insert({
-      user_id:session.user.id,
-      session_date:todayISO(),
-      actual_minutes:min,
-      planned_minutes:min,
-      session_type:'focus',
-      ended_at:new Date().toISOString()
-    })
-    loadAll()
-  }
+        supabase
+          .from('study_days')
+          .select('*')
+          .eq('user_id', uid)
+          .order('study_date'),
 
-  async function addQuestions(e){
-    e.preventDefault()
-    const f=new FormData(e.currentTarget)
-    const total=+f.get('total'),correct=+f.get('correct')
-    if(correct>total){
-      setMsg('Correct answers cannot exceed total questions.')
+        supabase
+          .from('question_blocks')
+          .select('*')
+          .eq('user_id', uid)
+          .order('question_date', {
+            ascending: false,
+          })
+          .limit(100),
+
+        supabase
+          .from('full_length_scores')
+          .select('*')
+          .eq('user_id', uid)
+          .order('exam_date', {
+            ascending: false,
+          }),
+
+        supabase
+          .from('study_sessions')
+          .select('*')
+          .eq('user_id', uid)
+          .order('session_date', {
+            ascending: false,
+          })
+          .limit(500),
+      ])
+
+    if (
+      t.error ||
+      d.error ||
+      q.error ||
+      f.error ||
+      se.error
+    ) {
+      setMsg(
+        t.error?.message ||
+          d.error?.message ||
+          q.error?.message ||
+          f.error?.message ||
+          se.error?.message
+      )
+
       return
     }
 
-    await supabase.from('question_blocks').insert({
-      user_id:session.user.id,
-      question_date:todayISO(),
-      source:f.get('source'),
-      subject:f.get('subject'),
-      total_questions:total,
-      correct_questions:correct,
-      timed:f.get('timed')==='on'
-    })
-
-    e.currentTarget.reset()
-    loadAll()
+    setTasks(t.data || [])
+    setDays(d.data || [])
+    setQlogs(q.data || [])
+    setFls(f.data || [])
+    setSessions(se.data || [])
   }
 
-  async function addFL(e){
+  async function toggle(task) {
+    const completed = !task.completed
+
+    const { error } = await supabase
+      .from('daily_tasks')
+      .update({
+        completed,
+        completed_at: completed
+          ? new Date().toISOString()
+          : null,
+      })
+      .eq('id', task.id)
+
+    if (error) {
+      setMsg(error.message)
+    } else {
+      setTasks((x) =>
+        x.map((t) =>
+          t.id === task.id
+            ? {
+                ...t,
+                completed,
+                completed_at: completed
+                  ? new Date().toISOString()
+                  : null,
+              }
+            : t
+        )
+      )
+    }
+  }
+
+  async function logSession(minutes) {
+    if (!session || !minutes) return
+
+    const { error } = await supabase
+      .from('study_sessions')
+      .insert({
+        user_id: session.user.id,
+        session_date: todayISO(),
+        actual_minutes: minutes,
+        planned_minutes: minutes,
+        session_type: 'Pomodoro',
+        ended_at:
+          new Date().toISOString(),
+      })
+
+    if (error) {
+      setMsg(error.message)
+    } else {
+      loadAll()
+    }
+  }
+
+  async function addQuestions(e) {
     e.preventDefault()
-    const f=new FormData(e.currentTarget)
-    const vals=['cp','cars','bb','ps'].map(k=>+f.get(k))
 
-    await supabase.from('full_length_scores').insert({
-      user_id:session.user.id,
-      exam_date:f.get('date'),
-      exam_name:f.get('name'),
-      cp_score:vals[0],
-      cars_score:vals[1],
-      bb_score:vals[2],
-      ps_score:vals[3],
-      total_score:vals.reduce((a,b)=>a+b,0)
-    })
+    const fd = new FormData(
+      e.currentTarget
+    )
 
-    e.currentTarget.reset()
-    loadAll()
+    const total = Number(fd.get('total'))
+    const correct = Number(
+      fd.get('correct')
+    )
+
+    const { error } = await supabase
+      .from('question_blocks')
+      .insert({
+        user_id: session.user.id,
+        question_date: fd.get('date'),
+        source: fd.get('source'),
+        subject: fd.get('subject'),
+        total_questions: total,
+        correct_questions: correct,
+        timed:
+          fd.get('timed') === 'on',
+      })
+
+    if (error) {
+      setMsg(error.message)
+    } else {
+      e.currentTarget.reset()
+      loadAll()
+    }
   }
 
-  if(loading)
-    return <main className="center"><div className="loader"/></main>
+  async function addFL(e) {
+    e.preventDefault()
 
-  if(!session)
-    return <main className="auth">
-      <div className="authCard">
-        <div className="brand">
-          <span>λ</span>
-          <div>
-            <h1>MCAT Study Tracker</h1>
-            <p>Built for the long game.</p>
-          </div>
+    const fd = new FormData(
+      e.currentTarget
+    )
+
+    const cp = Number(fd.get('cp'))
+    const cars = Number(fd.get('cars'))
+    const bb = Number(fd.get('bb'))
+    const ps = Number(fd.get('ps'))
+
+    const { error } = await supabase
+      .from('full_length_scores')
+      .insert({
+        user_id: session.user.id,
+        exam_date: fd.get('date'),
+        exam_name: fd.get('name'),
+        cp_score: cp,
+        cars_score: cars,
+        bb_score: bb,
+        ps_score: ps,
+        total_score:
+          cp + cars + bb + ps,
+      })
+
+    if (error) {
+      setMsg(error.message)
+    } else {
+      e.currentTarget.reset()
+      loadAll()
+    }
+  }
+
+  async function auth(e) {
+    e.preventDefault()
+
+    setMsg('')
+
+    const fn =
+      authMode === 'signin'
+        ? supabase.auth
+            .signInWithPassword
+        : supabase.auth.signUp
+
+    const { error } = await fn({
+      email,
+      password,
+    })
+
+    if (error) {
+      setMsg(error.message)
+    }
+  }
+
+  function setTimer(kind) {
+    setRunning(false)
+    setTimerMode(kind)
+
+    setSeconds(
+      (kind === 'Focus'
+        ? focusMin
+        : breakMin) * 60
+    )
+  }
+
+  if (loading) {
+    return (
+      <main className="auth">
+        <div className="card">
+          Loading…
         </div>
+      </main>
+    )
+  }
 
-        <h2>{authMode==='login'?'Welcome back':'Create your account'}</h2>
-
-        <form onSubmit={auth}>
-          <input name="email" type="email" placeholder="Email" required/>
-          <input name="password" type="password" placeholder="Password" minLength="6" required/>
-          <button>{authMode==='login'?'Sign in':'Create account'}</button>
-        </form>
-
-        {msg&&<p className="message">{msg}</p>}
-
-        <button
-          className="link"
-          onClick={()=>setAuthMode(authMode==='login'?'signup':'login')}
+  if (!session) {
+    return (
+      <main className="auth">
+        <form
+          className="card authCard"
+          onSubmit={auth}
         >
-          {authMode==='login'
-            ?'Need an account? Sign up'
-            :'Already have an account? Sign in'}
-        </button>
-      </div>
-    </main>
+          <h1>MCAT Study Tracker</h1>
 
-  const dayTasks=tasks.filter(t=>t.task_date===selected)
-  const done=dayTasks.filter(t=>t.completed).length
-  const pct=dayTasks.length?Math.round(done/dayTasks.length*100):0
-  const allDone=tasks.filter(t=>t.completed).length
+          <p>
+            January 21, 2027 plan
+          </p>
 
-  const totalQuestions=qlogs.reduce((a,q)=>a+q.total_questions,0)
-  const totalCorrect=qlogs.reduce((a,q)=>a+q.correct_questions,0)
-  const accuracy=totalQuestions?Math.round(totalCorrect/totalQuestions*100):0
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) =>
+              setEmail(e.target.value)
+            }
+            required
+          />
 
-  const selectedPlannedMinutes=dayTasks.reduce(
-    (a,t)=>a+(t.estimated_minutes||0),0
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) =>
+              setPassword(e.target.value)
+            }
+            required
+          />
+
+          <button>
+            {authMode === 'signin'
+              ? 'Sign in'
+              : 'Create account'}
+          </button>
+
+          <button
+            type="button"
+            className="secondary"
+            onClick={() =>
+              setAuthMode((x) =>
+                x === 'signin'
+                  ? 'signup'
+                  : 'signin'
+              )
+            }
+          >
+            {authMode === 'signin'
+              ? 'Need an account?'
+              : 'Already have an account?'}
+          </button>
+
+          {msg && (
+            <p className="message">
+              {msg}
+            </p>
+          )}
+        </form>
+      </main>
+    )
+  }
+
+  const testDate = new Date(
+    '2027-01-21T12:00:00'
   )
 
-  const selectedActualMinutes=sessions
-    .filter(x=>x.session_date===selected)
-    .reduce((a,x)=>a+(x.actual_minutes||0),0)
+  const now = new Date()
 
-  const nowDate=new Date(selected+'T12:00:00')
-  const monday=new Date(nowDate)
-  const weekday=(monday.getDay()+6)%7
-  monday.setDate(monday.getDate()-weekday)
-
-  const weekDates=Array.from({length:7},(_,i)=>{
-    const d=new Date(monday)
-    d.setDate(monday.getDate()+i)
-    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-  })
-
-  const weekTasks=tasks.filter(t=>weekDates.includes(t.task_date))
-  const weekDone=weekTasks.filter(t=>t.completed).length
-  const weekPct=weekTasks.length
-    ?Math.round(weekDone/weekTasks.length*100)
-    :0
-
-  const weekStudyMinutes=sessions
-    .filter(x=>weekDates.includes(x.session_date))
-    .reduce((a,x)=>a+(x.actual_minutes||0),0)
-
-  const weekQuestions=qlogs
-    .filter(q=>weekDates.includes(q.question_date))
-    .reduce((a,q)=>a+q.total_questions,0)
-
-  const m=String(Math.floor(seconds/60)).padStart(2,'0')
-  const s=String(seconds%60).padStart(2,'0')
-
-  const timerTotal=(timerMode==='Focus'?focusMin:breakMin)*60
-  const timerPct=Math.max(
-    0,
-    Math.min(100,100-(seconds/timerTotal*100))
-  )
-
-  const daysToMCAT=Math.max(
+  const countdown = Math.max(
     0,
     Math.ceil(
-      (
-        new Date('2027-01-29T12:00:00')-
-        new Date()
-      )/86400000
+      (testDate - now) /
+        (1000 * 60 * 60 * 24)
     )
   )
 
-  return <main className="shell">
-    <aside>
-      <div className="logo">
-        <span className="lambda">λ</span>
-        <span>MCAT</span>
-      </div>
+  return (
+    <div className="shell">
+      <aside className="aside">
+        <div className="logo">
+          <span>λ</span>
 
-      {['Today','Calendar','Questions','Full Lengths','Analytics'].map(x=>
+          <div>
+            <b>MCAT</b>
+            <small>
+              STUDY TRACKER
+            </small>
+          </div>
+        </div>
+
+        <nav>
+          {[
+            'Today',
+            'Calendar',
+            'Questions',
+            'Full Lengths',
+            'Analytics',
+          ].map((x) => (
+            <button
+              key={x}
+              className={
+                tab === x
+                  ? 'active'
+                  : ''
+              }
+              onClick={() =>
+                setTab(x)
+              }
+            >
+              {x}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sideExam">
+          <small>TEST DAY</small>
+          <b>JAN 21</b>
+          <span>2027</span>
+        </div>
+
         <button
-          key={x}
-          className={tab===x?'active':''}
-          onClick={()=>setTab(x)}
+          className="secondary"
+          onClick={() =>
+            supabase.auth.signOut()
+          }
         >
-          {x}
+          Sign out
         </button>
-      )}
+      </aside>
 
-      <div className="spacer"/>
-
-      <div className="sideExam">
-        <small>TEST DAY</small>
-        <b>JAN 29</b>
-        <span>2027</span>
-      </div>
-
-      <button onClick={()=>supabase.auth.signOut()}>
-        Sign out
-      </button>
-    </aside>
-
-    <section className="content">
-      <header>
-        <div>
-          <p className="eyebrow">
-            {planned?.phase||'MCAT PLAN'}
-          </p>
-          <h1>{tab}</h1>
-        </div>
-
-        <div className="countdown">
-          <b>{daysToMCAT}</b>
-          <span>days to MCAT</span>
-        </div>
-      </header>
-
-      {tab==='Today'&&<>
-        <section className="weekSummary">
-          <div className="weekTitle">
-            <div>
-              <p className="eyebrow">THIS WEEK</p>
-              <h2>Weekly momentum</h2>
-            </div>
-            <strong>{weekPct}%</strong>
-          </div>
-
-          <div className="weekStats">
-            <div>
-              <span>STUDY TIME</span>
-              <b>{hoursText(weekStudyMinutes)}</b>
-              <small>focused this week</small>
-            </div>
-
-            <div>
-              <span>TASKS</span>
-              <b>
-                {weekDone}
-                <em>/{weekTasks.length}</em>
-              </b>
-              <small>completed</small>
-            </div>
-
-            <div>
-              <span>QUESTIONS</span>
-              <b>{weekQuestions}</b>
-              <small>logged this week</small>
-            </div>
-
-            <div>
-              <span>WEEK PROGRESS</span>
-              <b>{weekPct}%</b>
-              <small>of scheduled tasks</small>
-            </div>
-          </div>
-
-          <div className="weekDays">
-            {weekDates.map(date=>{
-              const dt=tasks.filter(t=>t.task_date===date)
-              const dc=dt.filter(t=>t.completed).length
-              const dp=dt.length
-                ?Math.round(dc/dt.length*100)
-                :0
-
-              const d=new Date(date+'T12:00:00')
-
-              return <button
-                key={date}
-                className={
-                  (date===selected?'selected ':'')+
-                  (date===todayISO()?'current':'')
-                }
-                onClick={()=>setSelected(date)}
-              >
-                <span>
-                  {d.toLocaleDateString(
-                    'en-US',
-                    {weekday:'short'}
-                  ).toUpperCase()}
-                </span>
-
-                <b>{d.getDate()}</b>
-
-                <i>
-                  <em style={{height:dp+'%'}}/>
-                </i>
-
-                <small>{dp}%</small>
-              </button>
-            })}
-          </div>
-        </section>
-
-        <div className="todayHeading">
+      <main className="content">
+        <header className="header">
           <div>
+            <h1>{tab}</h1>
+
             <p>
-              {new Date(
-                selected+'T12:00:00'
-              ).toLocaleDateString(
-                'en-US',
-                {
-                  weekday:'long',
-                  month:'long',
-                  day:'numeric'
-                }
-              )}
+              {planned?.phase ||
+                'MCAT preparation'}
             </p>
-
-            <h2>
-              {planned?.assignment||'Study plan'}
-            </h2>
           </div>
 
-          <div className="todayMetrics">
-            <div>
-              <span>PLANNED</span>
-              <b>{hoursText(selectedPlannedMinutes)}</b>
-            </div>
-
-            <div>
-              <span>FOCUSED</span>
-              <b>{hoursText(selectedActualMinutes)}</b>
-            </div>
+          <div className="countdown">
+            <b>{countdown}</b>
+            <span>
+              days to MCAT
+            </span>
           </div>
-        </div>
+        </header>
 
-        <div className="progressCard">
-          <div>
-            <span>DAILY PROGRESS</span>
-            <b>
-              {done} of {dayTasks.length} tasks complete
-            </b>
+        {msg && (
+          <div className="message">
+            {msg}
           </div>
+        )}
 
-          <div className="bar">
-            <i style={{width:pct+'%'}}/>
-          </div>
+        {tab === 'Today' && (
+          <>
+            <section className="card weekSummary">
+              <div className="weekTitle">
+                <div>
+                  <small>
+                    THIS WEEK
+                  </small>
 
-          <strong>{pct}%</strong>
-        </div>
+                  <h2>
+                    Weekly Summary
+                  </h2>
+                </div>
 
-        <div className="dashboardGrid">
-          <div className="card checklistCard">
-            <div className="cardTitle">
-              <div>
-                <p className="eyebrow">
-                  TODAY'S MISSION
-                </p>
-                <h3>Study plan</h3>
+                <div className="weekStats">
+                  <span>
+                    <b>
+                      {weekCompleted}
+                    </b>{' '}
+                    / {weekTasks.length}{' '}
+                    tasks
+                  </span>
+
+                  <span>
+                    <b>
+                      {hoursText(
+                        weekActual
+                      )}
+                    </b>{' '}
+                    focused
+                  </span>
+
+                  <span>
+                    <b>
+                      {hoursText(
+                        weekPlanned
+                      )}
+                    </b>{' '}
+                    planned
+                  </span>
+                </div>
               </div>
 
-              <span className="taskCount">
-                {done}/{dayTasks.length}
+              <div className="weekDays">
+                {weekDates.map(
+                  (date) => {
+                    const dt =
+                      tasks.filter(
+                        (t) =>
+                          t.task_date ===
+                          date
+                      )
+
+                    const done =
+                      dt.filter(
+                        (t) =>
+                          t.completed
+                      ).length
+
+                    return (
+                      <button
+                        key={date}
+                        className={
+                          selected ===
+                          date
+                            ? 'selected'
+                            : ''
+                        }
+                        onClick={() =>
+                          setSelected(
+                            date
+                          )
+                        }
+                      >
+                        <small>
+                          {new Date(
+                            `${date}T12:00:00`
+                          ).toLocaleDateString(
+                            undefined,
+                            {
+                              weekday:
+                                'short',
+                            }
+                          )}
+                        </small>
+
+                        <b>
+                          {new Date(
+                            `${date}T12:00:00`
+                          ).getDate()}
+                        </b>
+
+                        <span>
+                          {dt.length
+                            ? `${done}/${dt.length}`
+                            : '—'}
+                        </span>
+                      </button>
+                    )
+                  }
+                )}
+              </div>
+            </section>
+
+            <div className="todayHeading">
+              <div>
+                <small>
+                  {fmt(
+                    selected
+                  ).toUpperCase()}
+                </small>
+
+                <h2>
+                  {planned?.assignment ||
+                    'Study Plan'}
+                </h2>
+
+                <p>
+                  {planned?.notes}
+                </p>
+              </div>
+
+              <div className="todayMetrics">
+                <span>
+                  <small>
+                    PLANNED
+                  </small>
+
+                  <b>
+                    {hoursText(
+                      plannedMinutes
+                    )}
+                  </b>
+                </span>
+
+                <span>
+                  <small>
+                    FOCUSED
+                  </small>
+
+                  <b>
+                    {hoursText(
+                      actualMinutes
+                    )}
+                  </b>
+                </span>
+              </div>
+            </div>
+
+            <section className="card progressCard">
+              <div>
+                <b>
+                  Daily progress
+                </b>
+
+                <span>
+                  {completed} of{' '}
+                  {
+                    selectedTasks.length
+                  }{' '}
+                  complete
+                </span>
+              </div>
+
+              <strong>
+                {pct}%
+              </strong>
+
+              <div className="progress">
+                <i
+                  style={{
+                    width: `${pct}%`,
+                  }}
+                />
+              </div>
+            </section>
+
+            <div className="dashboardGrid">
+              <section className="card">
+                <div className="sectionTitle">
+                  <h3>
+                    Today's Checklist
+                  </h3>
+
+                  <span>
+                    {
+                      selectedTasks.length
+                    }{' '}
+                    tasks
+                  </span>
+                </div>
+
+                <div className="taskList">
+                  {selectedTasks.length ? (
+                    selectedTasks.map(
+                      (t) => (
+                        <button
+                          key={t.id}
+                          className={`task ${
+                            t.completed
+                              ? 'done'
+                              : ''
+                          }`}
+                          onClick={() =>
+                            toggle(t)
+                          }
+                        >
+                          <span className="taskCheck">
+                            {t.completed
+                              ? '✓'
+                              : ''}
+                          </span>
+
+                          <span className="taskBody">
+                            <small>
+                              {
+                                t.task_type
+                              }{' '}
+                              ·{' '}
+                              {
+                                t.resource
+                              }
+                            </small>
+
+                            <b>
+                              {t.title}
+                            </b>
+
+                            <em>
+                              {
+                                t.description
+                              }
+                            </em>
+                          </span>
+
+                          <span>
+                            {t.estimated_minutes
+                              ? `${t.estimated_minutes}m`
+                              : ''}
+                          </span>
+                        </button>
+                      )
+                    )
+                  ) : (
+                    <p>
+                      No tasks for this
+                      date.
+                    </p>
+                  )}
+                </div>
+              </section>
+
+              <section className="card pomodoroCard">
+                <div className="sectionTitle">
+                  <h3>
+                    Pomodoro
+                  </h3>
+
+                  <span>
+                    {timerMode}
+                  </span>
+                </div>
+
+                <div className="timerRing">
+                  <div>
+                    <b>
+                      {String(
+                        Math.floor(
+                          seconds / 60
+                        )
+                      ).padStart(
+                        2,
+                        '0'
+                      )}
+                      :
+                      {String(
+                        seconds % 60
+                      ).padStart(
+                        2,
+                        '0'
+                      )}
+                    </b>
+
+                    <span>
+                      {timerMode.toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="actions">
+                  <button
+                    onClick={() =>
+                      setRunning(
+                        (x) => !x
+                      )
+                    }
+                  >
+                    {running
+                      ? 'Pause'
+                      : 'Start'}
+                  </button>
+
+                  <button
+                    className="secondary"
+                    onClick={() =>
+                      setTimer(
+                        timerMode
+                      )
+                    }
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                <div className="timerFooter">
+                  <label>
+                    Focus
+
+                    <input
+                      type="number"
+                      min="1"
+                      value={focusMin}
+                      onChange={(e) => {
+                        const value =
+                          Number(
+                            e.target
+                              .value
+                          ) || 25
+
+                        setFocusMin(
+                          value
+                        )
+
+                        if (
+                          !running &&
+                          timerMode ===
+                            'Focus'
+                        ) {
+                          setSeconds(
+                            value * 60
+                          )
+                        }
+                      }}
+                    />
+                  </label>
+
+                  <label>
+                    Break
+
+                    <input
+                      type="number"
+                      min="1"
+                      value={breakMin}
+                      onChange={(e) => {
+                        const value =
+                          Number(
+                            e.target
+                              .value
+                          ) || 5
+
+                        setBreakMin(
+                          value
+                        )
+
+                        if (
+                          !running &&
+                          timerMode ===
+                            'Break'
+                        ) {
+                          setSeconds(
+                            value * 60
+                          )
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+
+                <div className="actions">
+                  <button
+                    className="secondary"
+                    onClick={() =>
+                      setTimer(
+                        'Focus'
+                      )
+                    }
+                  >
+                    Focus
+                  </button>
+
+                  <button
+                    className="secondary"
+                    onClick={() =>
+                      setTimer(
+                        'Break'
+                      )
+                    }
+                  >
+                    Break
+                  </button>
+                </div>
+              </section>
+            </div>
+          </>
+        )}
+
+        {tab === 'Calendar' && (
+          <section className="card">
+            <div className="sectionTitle">
+              <h3>
+                Plan Calendar
+              </h3>
+
+              <span>
+                Sep 19 → Jan 21
               </span>
             </div>
 
-            <div className="tasks">
-              {dayTasks.map(t=>
-                <label
+            <div className="calendarList">
+              {schedule.map((r) => (
+                <button
+                  key={r.date}
                   className={
-                    'task '+(t.completed?'done':'')
+                    selected ===
+                    r.date
+                      ? 'selectedRow'
+                      : ''
                   }
-                  key={t.id}
+                  onClick={() => {
+                    setSelected(
+                      r.date
+                    )
+                    setTab('Today')
+                  }}
                 >
-                  <input
-                    type="checkbox"
-                    checked={t.completed}
-                    onChange={()=>toggle(t)}
-                  />
-
-                  <span className="taskCheck"/>
-
-                  <span className="taskBody">
-                    <b>{t.task_type}</b>
-                    <strong>{t.title}</strong>
-                    <small>
-                      {t.resource} · {t.estimated_minutes||0} min
-                    </small>
+                  <span>
+                    {fmt(r.date)}
                   </span>
-                </label>
-              )}
 
-              {!dayTasks.length&&
-                <p>No tasks for this date yet.</p>
-              }
+                  <b>
+                    {r.phase}
+                  </b>
+
+                  <em>
+                    {r.assignment}
+                  </em>
+
+                  <strong>
+                    {r.hours}h
+                  </strong>
+                </button>
+              ))}
             </div>
-          </div>
+          </section>
+        )}
 
-          <div className="card pomodoroCard">
-            <div className="timerTop">
-              <div>
-                <p className="eyebrow">
-                  FOCUS MODE
-                </p>
-                <h3>Pomodoro</h3>
-              </div>
-
-              <select
-                value={focusMin}
-                onChange={e=>{
-                  const v=+e.target.value
-                  setFocusMin(v)
-                  setBreakMin(v===25?5:10)
-                  setSeconds(v*60)
-                  setTimerMode('Focus')
-                  setRunning(false)
-                }}
-              >
-                <option value="25">25 / 5</option>
-                <option value="50">50 / 10</option>
-                <option value="60">60 / 10</option>
-              </select>
-            </div>
-
-            <div
-              className="timerRing"
-              style={{'--timer':timerPct}}
-            >
-              <div>
-                <span>
-                  {timerMode.toUpperCase()}
-                </span>
-
-                <strong>{m}:{s}</strong>
-
-                <small>
-                  {running
-                    ?'Stay locked in.'
-                    :'Ready when you are.'}
-                </small>
-              </div>
-            </div>
-
-            <div className="actions">
-              <button
-                onClick={()=>setRunning(!running)}
-              >
-                {running?'Pause':'Start focus'}
-              </button>
-
-              <button
-                className="secondary"
-                onClick={()=>{
-                  setRunning(false)
-                  setTimerMode('Focus')
-                  setSeconds(focusMin*60)
-                }}
-              >
-                Reset
-              </button>
-            </div>
-
-            <div className="timerFooter">
-              <div>
-                <span>TODAY</span>
-                <b>
-                  {hoursText(selectedActualMinutes)}
-                </b>
-              </div>
-
-              <div>
-                <span>GOAL</span>
-                <b>
-                  {hoursText(selectedPlannedMinutes)}
-                </b>
-              </div>
-            </div>
-          </div>
-        </div>
-      </>}
-
-      {tab==='Calendar'&&
-        <div className="card">
-          <div className="calendarHead">
-            <h3>Study calendar</h3>
-
-            <input
-              type="date"
-              value={selected}
-              min="2026-09-16"
-              max="2027-01-29"
-              onChange={e=>setSelected(e.target.value)}
-            />
-          </div>
-
-          <div className="monthGrid">
-            {schedule.map(r=>{
-              const dt=tasks.filter(
-                t=>t.task_date===r.date
-              )
-
-              const dc=dt.filter(
-                t=>t.completed
-              ).length
-
-              const p=dt.length
-                ?dc/dt.length
-                :0
-
-              return <button
-                key={r.date}
-                onClick={()=>{
-                  setSelected(r.date)
-                  setTab('Today')
-                }}
-                className={
-                  r.date===todayISO()
-                    ?'today'
-                    :''
-                }
-              >
-                <span>{fmt(r.date)}</span>
-                <b>{r.phase.split('/')[0]}</b>
-                <i style={{width:(p*100)+'%'}}/>
-                <small>{dc}/{dt.length}</small>
-              </button>
-            })}
-          </div>
-        </div>
-      }
-
-      {tab==='Questions'&&
-        <div className="grid2">
-          <div className="card">
-            <h3>Log a question block</h3>
-
+        {tab === 'Questions' && (
+          <div className="dashboardGrid">
             <form
-              className="form"
+              className="card formCard"
               onSubmit={addQuestions}
             >
-              <select name="source">
-                <option>UWorld</option>
-                <option>AAMC</option>
-                <option>Kaplan</option>
-                <option>Jack Westin</option>
-              </select>
+              <h3>
+                Log Question Block
+              </h3>
 
-              <select name="subject">
-                <option>B/B</option>
-                <option>C/P</option>
-                <option>P/S</option>
-                <option>CARS</option>
-              </select>
-
-              <input
-                name="total"
-                type="number"
-                min="1"
-                placeholder="Total questions"
-                required
-              />
-
-              <input
-                name="correct"
-                type="number"
-                min="0"
-                placeholder="Correct"
-                required
-              />
-
-              <label className="check">
-                <input
-                  name="timed"
-                  type="checkbox"
-                />
-                {' '}Timed block
-              </label>
-
-              <button>Save block</button>
-            </form>
-          </div>
-
-          <div className="card">
-            <h3>Recent performance</h3>
-
-            <div className="bigStat">
-              {accuracy}%
-              <small>overall accuracy</small>
-            </div>
-
-            {qlogs.slice(0,8).map(q=>
-              <div className="row" key={q.id}>
-                <span>
-                  {q.source} · {q.subject}
-                </span>
-
-                <b>
-                  {q.correct_questions}/
-                  {q.total_questions}
-                </b>
-              </div>
-            )}
-          </div>
-        </div>
-      }
-
-      {tab==='Full Lengths'&&
-        <div className="grid2">
-          <div className="card">
-            <h3>Log full-length</h3>
-
-            <form
-              className="form"
-              onSubmit={addFL}
-            >
               <input
                 name="date"
                 type="date"
+                defaultValue={todayISO()}
+                required
+              />
+
+              <input
+                name="source"
+                placeholder="Source (UWorld, AAMC…)"
+                required
+              />
+
+              <input
+                name="subject"
+                placeholder="Subject (B/B, C/P, P/S, CARS)"
+                required
+              />
+
+              <div className="formRow">
+                <input
+                  name="total"
+                  type="number"
+                  min="1"
+                  placeholder="Total"
+                  required
+                />
+
+                <input
+                  name="correct"
+                  type="number"
+                  min="0"
+                  placeholder="Correct"
+                  required
+                />
+              </div>
+
+              <label className="checkLabel">
+                <input
+                  name="timed"
+                  type="checkbox"
+                />{' '}
+                Timed block
+              </label>
+
+              <button>
+                Save block
+              </button>
+            </form>
+
+            <section className="card">
+              <h3>
+                Recent Blocks
+              </h3>
+
+              <div className="logList">
+                {qlogs.map((q) => (
+                  <div key={q.id}>
+                    <span>
+                      {q.question_date}{' '}
+                      · {q.source} ·{' '}
+                      {q.subject}
+                    </span>
+
+                    <b>
+                      {
+                        q.correct_questions
+                      }
+                      /
+                      {
+                        q.total_questions
+                      }{' '}
+                      ·{' '}
+                      {Math.round(
+                        (100 *
+                          q.correct_questions) /
+                          q.total_questions
+                      )}
+                      %
+                    </b>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {tab === 'Full Lengths' && (
+          <div className="dashboardGrid">
+            <form
+              className="card formCard"
+              onSubmit={addFL}
+            >
+              <h3>
+                Log Full Length
+              </h3>
+
+              <input
+                name="date"
+                type="date"
+                defaultValue={todayISO()}
                 required
               />
 
               <input
                 name="name"
-                placeholder="Exam name (e.g. AAMC FL 1)"
+                placeholder="Exam name"
                 required
               />
 
-              <div className="four">
+              <div className="formRow">
                 <input
                   name="cp"
                   type="number"
-                  min="118"
-                  max="132"
                   placeholder="C/P"
                   required
                 />
@@ -847,17 +1395,15 @@ export default function Home(){
                 <input
                   name="cars"
                   type="number"
-                  min="118"
-                  max="132"
                   placeholder="CARS"
                   required
                 />
+              </div>
 
+              <div className="formRow">
                 <input
                   name="bb"
                   type="number"
-                  min="118"
-                  max="132"
                   placeholder="B/B"
                   required
                 />
@@ -865,107 +1411,122 @@ export default function Home(){
                 <input
                   name="ps"
                   type="number"
-                  min="118"
-                  max="132"
                   placeholder="P/S"
                   required
                 />
               </div>
 
-              <button>Save score</button>
+              <button>
+                Save score
+              </button>
             </form>
+
+            <section className="card">
+              <h3>
+                Full-Length Scores
+              </h3>
+
+              <div className="logList">
+                {fls.map((f) => (
+                  <div key={f.id}>
+                    <span>
+                      {f.exam_date} ·{' '}
+                      {f.exam_name}
+                    </span>
+
+                    <b>
+                      {f.total_score}
+                    </b>
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
+        )}
 
-          <div className="card">
-            <h3>Score history</h3>
+        {tab === 'Analytics' && (
+          <div className="dashboardGrid">
+            <section className="card">
+              <h3>
+                Study Time
+              </h3>
 
-            {fls.length
-              ?fls.map(f=>
-                <div
-                  className="score"
-                  key={f.id}
-                >
-                  <div>
-                    <b>{f.exam_name}</b>
-                    <small>
-                      {fmt(f.exam_date)}
-                    </small>
+              <div className="bigStat">
+                {hoursText(
+                  weekActual
+                )}
+              </div>
+
+              <p>
+                Focused this
+                selected week
+              </p>
+
+              <div className="bigStat">
+                {hoursText(
+                  weekPlanned
+                )}
+              </div>
+
+              <p>
+                Planned this
+                selected week
+              </p>
+            </section>
+
+            <section className="card">
+              <h3>
+                Question Accuracy
+              </h3>
+
+              {qlogs.length ? (
+                <>
+                  <div className="bigStat">
+                    {Math.round(
+                      (100 *
+                        qlogs.reduce(
+                          (a, q) =>
+                            a +
+                            Number(
+                              q.correct_questions
+                            ),
+                          0
+                        )) /
+                        qlogs.reduce(
+                          (a, q) =>
+                            a +
+                            Number(
+                              q.total_questions
+                            ),
+                          0
+                        )
+                    )}
+                    %
                   </div>
 
-                  <strong>
-                    {f.total_score}
-                  </strong>
-                </div>
-              )
-              :<p>No full-lengths logged yet.</p>
-            }
+                  <p>
+                    Across{' '}
+                    {qlogs.reduce(
+                      (a, q) =>
+                        a +
+                        Number(
+                          q.total_questions
+                        ),
+                      0
+                    )}{' '}
+                    logged questions
+                  </p>
+                </>
+              ) : (
+                <p>
+                  No question blocks
+                  logged yet.
+                </p>
+              )}
+            </section>
           </div>
-        </div>
-      }
-
-      {tab==='Analytics'&&<>
-        <div className="stats">
-          <div>
-            <b>{allDone}</b>
-            <span>tasks completed</span>
-          </div>
-
-          <div>
-            <b>
-              {tasks.length
-                ?Math.round(
-                  allDone/tasks.length*100
-                )
-                :0}%
-            </b>
-            <span>plan completed</span>
-          </div>
-
-          <div>
-            <b>{totalQuestions}</b>
-            <span>questions logged</span>
-          </div>
-
-          <div>
-            <b>{accuracy||'—'}</b>
-            <span>
-              {accuracy
-                ?'% accuracy'
-                :'accuracy'}
-            </span>
-          </div>
-        </div>
-
-        <div className="card">
-          <h3>Phase roadmap</h3>
-
-          {[
-            ['Sep 16–Oct 29','Gradual ramp + Kaplan/JW'],
-            ['Oct 30–Nov 22','UWorld practice transition'],
-            ['Nov 23–Dec 20','Heavy UWorld + error review'],
-            ['Dec 21–Jan 24','AAMC official material + FLs'],
-            ['Jan 25–29','Final taper + MCAT']
-          ].map((x,i)=>
-            <div
-              className="road"
-              key={x[0]}
-            >
-              <em>{i+1}</em>
-
-              <div>
-                <b>{x[0]}</b>
-                <p>{x[1]}</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </>}
-
-      {msg&&
-        <div className="toast">
-          {msg}
-        </div>
-      }
-    </section>
-  </main>
+        )}
+      </main>
+    </div>
+  )
 }
