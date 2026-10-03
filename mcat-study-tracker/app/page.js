@@ -3,10 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import config from '../data/studyConfig.json'
+import schedule from '../data/schedule.json'
 
 const EXAM_DATE = config.exam?.date || '2027-01-21'
 const PLAN_START = config.global_rules?.plan_start || '2026-10-03'
 const SOURCE_TYPE = 'v2_engine'
+const SCHEDULE_DAYS = schedule.days || []
 
 const STUDENTS = {
   Diya: {
@@ -52,6 +54,7 @@ function daysBetween(start, end) {
 
 function formatDate(iso, options = {}) {
   if (!iso) return ''
+
   return dateFromISO(iso).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -62,27 +65,20 @@ function formatDate(iso, options = {}) {
 
 function formatMinutes(minutes = 0) {
   const n = Math.max(0, Math.round(Number(minutes) || 0))
-  const h = Math.floor(n / 60)
-  const m = n % 60
+  const hours = Math.floor(n / 60)
+  const mins = n % 60
 
-  if (!h) return `${m}m`
-  if (!m) return `${h}h`
+  if (!hours) return `${mins}m`
+  if (!mins) return `${hours}h`
 
-  return `${h}h ${m}m`
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value))
-}
-
-function isBetween(date, start, end) {
-  return date >= start && date <= end
+  return `${hours}h ${mins}m`
 }
 
 function getWeekDates(iso) {
   const date = dateFromISO(iso)
   const day = date.getDay()
   const mondayOffset = day === 0 ? -6 : 1 - day
+
   const monday = new Date(date)
   monday.setDate(date.getDate() + mondayOffset)
 
@@ -93,52 +89,18 @@ function getWeekDates(iso) {
   })
 }
 
-function getPhase(phases = [], iso) {
-  return (
-    phases.find(
-      phase => iso >= phase.start && iso <= phase.end
-    ) || null
-  )
+function getScheduledDay(iso) {
+  return SCHEDULE_DAYS.find(day => day.date === iso) || null
 }
 
-function getHamzahRamp(iso) {
-  return (
-    config.hamzah?.ramp?.find(
-      ramp => iso >= ramp.start && iso <= ramp.end
-    ) || null
-  )
-}
+function getStudentPlan(iso, student) {
+  const day = getScheduledDay(iso)
 
-function getSubject(rotation = [], iso) {
-  if (!rotation.length) return 'Mixed'
+  if (!day) return null
 
-  const diff = Math.max(0, daysBetween(PLAN_START, iso))
-  return rotation[diff % rotation.length]
-}
-
-function isLightDay(iso) {
-  if (iso < PLAN_START || iso >= EXAM_DATE) return false
-
-  const diff = daysBetween(PLAN_START, iso)
-
-  // Every 7th study day.
-  return diff >= 0 && diff % 7 === 6
-}
-
-function isFullLengthDay(iso) {
-  return (config.shared?.full_length_dates || []).includes(iso)
-}
-
-function isFullLengthReviewDay(iso) {
-  const flDates = config.shared?.full_length_dates || []
-  return flDates.some(date => addDays(date, 1) === iso)
-}
-
-function average(min, max) {
-  if (min == null && max == null) return 0
-  if (max == null) return Number(min) || 0
-  if (min == null) return Number(max) || 0
-  return Math.round((Number(min) + Number(max)) / 2)
+  return student === 'Diya'
+    ? day.diya || null
+    : day.hamzah || null
 }
 
 /* ============================================================
@@ -166,7 +128,7 @@ function makeTask({
     description,
     resource,
     subject,
-    estimated_minutes: Math.max(0, Math.round(minutes)),
+    estimated_minutes: Math.max(0, Math.round(Number(minutes) || 0)),
     priority,
     sort_order: sort,
     completed: false,
@@ -184,324 +146,27 @@ function taskMinutes(tasks = []) {
   )
 }
 
-function completedMinutes(tasks = []) {
-  return tasks
-    .filter(task => task.completed)
-    .reduce(
-      (sum, task) => sum + (Number(task.estimated_minutes) || 0),
-      0
-    )
-}
-
 function taskProgress(tasks = []) {
-  if (!tasks.length) return 0
+  const progressTasks = tasks.filter(task => task.task_type !== 'Chapter')
 
-  const completed = tasks.filter(task => task.completed).length
-  return Math.round((completed / tasks.length) * 100)
+  if (!progressTasks.length) return 0
+
+  const completed = progressTasks.filter(task => task.completed).length
+
+  return Math.round((completed / progressTasks.length) * 100)
 }
 
 /* ============================================================
-   DIYA TASK GENERATOR
+   HAMZAH CHAPTER PROGRESS
    ============================================================ */
 
-function generateDiyaTasks(iso) {
-  if (iso < PLAN_START || iso > EXAM_DATE) return []
+function extractChapterSequence(task) {
+  const text = `${task.description || ''} ${task.details || ''}`
 
-  if (iso === EXAM_DATE) {
-    return [
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Exam',
-        title: 'MCAT DAY',
-        description:
-          'You made it. No study workload today. Follow your exam-day routine.',
-        resource: 'MCAT',
-        minutes: 0,
-        priority: 1,
-        sort: 1
-      })
-    ]
-  }
+  const match = text.match(/chapter_sequence:(\d+)/)
 
-  if (isFullLengthDay(iso)) {
-    return [
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Full Length',
-        title: 'Full-Length MCAT',
-        description:
-          'Take the full-length under realistic testing conditions. Protect this day from normal overflow.',
-        resource: 'AAMC / Scheduled FL',
-        subject: 'Full MCAT',
-        minutes: 450,
-        priority: 1,
-        sort: 1
-      }),
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Anki',
-        title: 'Light Anki only',
-        description:
-          'Optional light review after the exam. Do not turn FL day into another full study day.',
-        resource: 'Anki',
-        minutes: 20,
-        priority: 3,
-        sort: 2
-      })
-    ]
-  }
-
-  if (isFullLengthReviewDay(iso)) {
-    return [
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Review',
-        title: 'Deep full-length review',
-        description:
-          'Review every incorrect, guessed, uncertain, and poorly reasoned question. Update the error log and weaknesses.',
-        resource: 'Full Length',
-        subject: 'Mixed',
-        minutes: 240,
-        priority: 1,
-        sort: 1
-      }),
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Weakness',
-        title: 'Convert FL misses into weakness targets',
-        description:
-          'Identify patterns rather than isolated mistakes. Add meaningful weaknesses for retesting.',
-        resource: 'Error Log',
-        subject: 'Mixed',
-        minutes: 45,
-        priority: 1,
-        sort: 2
-      }),
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'CARS',
-        title: '2 timed CARS passages',
-        description: 'Keep CARS reasoning active after FL review.',
-        resource: 'AAMC / CARS',
-        subject: 'CARS',
-        minutes: 50,
-        priority: 2,
-        sort: 3
-      }),
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Anki',
-        title: 'Anki — 30 minutes',
-        description: 'Due cards plus important FL-derived cards.',
-        resource: 'Anki',
-        minutes: 30,
-        priority: 2,
-        sort: 4
-      })
-    ]
-  }
-
-  const phase = getPhase(config.diya?.phases || [], iso)
-
-  if (!phase) return []
-
-  if (isLightDay(iso)) {
-    const light = config.diya?.light_day || {}
-
-    return [
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'CARS',
-        title: `${light.cars_passages || 2} timed CARS passages + review`,
-        resource: phase.primary_resource || 'CARS',
-        subject: 'CARS',
-        minutes: 55,
-        priority: 1,
-        sort: 1
-      }),
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Anki',
-        title: `Anki — ${light.anki_minutes || 35} minutes`,
-        description: 'Due cards and meaningful mistake cards.',
-        resource: 'Anki',
-        minutes: light.anki_minutes || 35,
-        priority: 2,
-        sort: 2
-      }),
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Review',
-        title: 'Error log + weakness review',
-        description:
-          'Review high-value errors and previously identified weak topics.',
-        resource: 'Error Log',
-        subject: 'Mixed',
-        minutes: light.error_review_minutes || 60,
-        priority: 2,
-        sort: 3
-      }),
-      makeTask({
-        student: 'Diya',
-        date: iso,
-        type: 'Overflow',
-        title: 'Catch-up / protected recovery block',
-        description:
-          'Use this for important carried work. If caught up, stop early and recover.',
-        resource: 'Catch-up',
-        minutes: light.catch_up_minutes || 75,
-        priority: 2,
-        sort: 4
-      })
-    ]
-  }
-
-  const subject = getSubject(config.diya?.subject_rotation || [], iso)
-
-  const questions = average(
-    phase.question_target_min,
-    phase.question_target_max
-  )
-
-  const cars = average(
-    phase.cars_passages_min,
-    phase.cars_passages_max
-  )
-
-  const targetedQuestions =
-    Number(phase.targeted_questions) || 15
-
-  // Keep planned time close to a realistic 5–6 hour day.
-  const primaryQuestionMinutes = Math.max(
-    80,
-    Math.round(questions * 1.55)
-  )
-
-  const deepReviewMinutes = Math.min(
-    Number(phase.review_minutes) || 150,
-    120
-  )
-
-  return [
-    makeTask({
-      student: 'Diya',
-      date: iso,
-      type: 'Questions',
-      title: `${questions} timed ${subject} questions`,
-      description:
-        'Work under timed conditions. Flag guesses and uncertain answers for review.',
-      resource: phase.primary_resource,
-      subject,
-      minutes: primaryQuestionMinutes,
-      priority: 1,
-      sort: 1
-    }),
-
-    makeTask({
-      student: 'Diya',
-      date: iso,
-      type: 'Review',
-      title: 'Deep question review',
-      description:
-        'Review incorrect, guessed, uncertain, and poorly reasoned correct answers.',
-      resource: phase.primary_resource,
-      subject,
-      minutes: deepReviewMinutes,
-      priority: 1,
-      sort: 2
-    }),
-
-    makeTask({
-      student: 'Diya',
-      date: iso,
-      type: 'Questions',
-      title: `${targetedQuestions} targeted weakness questions`,
-      description:
-        'Use your weakest active topic. Prioritize understanding over volume.',
-      resource: phase.secondary_resource || phase.primary_resource,
-      subject: 'Weakness',
-      minutes: 50,
-      priority: 1,
-      sort: 3
-    }),
-
-    makeTask({
-      student: 'Diya',
-      date: iso,
-      type: 'CARS',
-      title: `${cars} timed CARS passages + review`,
-      description:
-        'Practice passage reasoning and review why each wrong answer was wrong.',
-      resource:
-        phase.primary_resource === 'AAMC'
-          ? 'AAMC CARS'
-          : 'CARS',
-      subject: 'CARS',
-      minutes: Math.max(45, cars * 22),
-      priority: 1,
-      sort: 4
-    }),
-
-    makeTask({
-      student: 'Diya',
-      date: iso,
-      type: 'Anki',
-      title: `Anki — ${phase.anki_minutes || 40} minutes`,
-      description:
-        'Due cards first. Add cards only for meaningful knowledge gaps.',
-      resource: 'Anki',
-      minutes: phase.anki_minutes || 40,
-      priority: 2,
-      sort: 5
-    }),
-
-    makeTask({
-      student: 'Diya',
-      date: iso,
-      type: 'Content',
-      title: `Targeted content repair — ${
-        phase.targeted_repair_minutes || 40
-      } minutes`,
-      description:
-        'Repair only weaknesses exposed by questions. No broad passive content pass.',
-      resource: phase.secondary_resource || 'Targeted Review',
-      subject,
-      minutes: phase.targeted_repair_minutes || 40,
-      priority: 2,
-      sort: 6
-    }),
-
-    makeTask({
-      student: 'Diya',
-      date: iso,
-      type: 'Recall',
-      title: `Closed-book recall — ${
-        phase.recall_minutes || 20
-      } minutes`,
-      description:
-        'Without notes, explain equations, mechanisms, pathways, and concepts from today.',
-      resource: 'Active Recall',
-      subject,
-      minutes: phase.recall_minutes || 20,
-      priority: 2,
-      sort: 7
-    })
-  ]
+  return match ? Number(match[1]) : null
 }
-
-/* ============================================================
-   HAMZAH CHAPTER HELPERS
-   ============================================================ */
 
 function getCompletedHamzahChapterSequences(tasks = []) {
   const completed = new Set()
@@ -509,468 +174,161 @@ function getCompletedHamzahChapterSequences(tasks = []) {
   tasks.forEach(task => {
     if (
       task.student_name !== 'Hamzah' ||
-      !task.completed ||
-      task.task_type !== 'Chapter'
+      task.task_type !== 'Chapter' ||
+      !task.completed
     ) {
       return
     }
 
-    const match = String(task.description || '').match(
-      /chapter_sequence:(\d+)/
-    )
+    const sequence = extractChapterSequence(task)
 
-    if (match) {
-      completed.add(Number(match[1]))
-    }
+    if (sequence) completed.add(sequence)
   })
 
   return completed
 }
 
-function getCurrentHamzahChapter(allTasks = []) {
+function getCurrentHamzahChapter(tasks = []) {
   const chapters = config.hamzah?.chapters || []
 
   if (!chapters.length) return null
 
-  const completed = getCompletedHamzahChapterSequences(allTasks)
+  const completed = getCompletedHamzahChapterSequences(tasks)
 
   return (
     chapters.find(chapter => !completed.has(chapter.sequence)) ||
-    chapters[chapters.length - 1]
+    null
   )
 }
 
-function hamzahChapterLabel(chapter) {
-  if (!chapter) return 'Kaplan content'
+function getHamzahChapterProgress(tasks = []) {
+  const completed = getCompletedHamzahChapterSequences(tasks)
+
+  return {
+    completed: completed.size,
+    total: config.hamzah?.chapters?.length || 58
+  }
+}
+
+function chapterLabel(chapter) {
+  if (!chapter) return 'Kaplan Content Complete'
 
   return `${chapter.subject} Ch. ${chapter.chapter}: ${chapter.title}`
 }
 
 /* ============================================================
-   HAMZAH TASK GENERATOR
+   SCHEDULE.JSON -> DATABASE TASKS
    ============================================================ */
 
-function generateHamzahTasks(iso, currentChapter) {
-  if (iso < PLAN_START || iso > EXAM_DATE) return []
+function generateScheduledTasks(
+  iso,
+  student,
+  currentHamzahChapter = null
+) {
+  const day = getScheduledDay(iso)
 
-  if (iso === EXAM_DATE) {
-    return [
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Exam',
-        title: 'MCAT DAY',
-        description:
-          'You made it. No study workload today. Follow your exam-day routine.',
-        resource: 'MCAT',
-        minutes: 0,
-        priority: 1,
-        sort: 1
-      })
-    ]
-  }
+  if (!day) return []
 
-  if (isFullLengthDay(iso)) {
-    return [
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Full Length',
-        title: 'Full-Length MCAT',
-        description:
-          'Take the same scheduled full-length as Diya under realistic testing conditions.',
-        resource: 'AAMC / Scheduled FL',
-        subject: 'Full MCAT',
-        minutes: 450,
-        priority: 1,
-        sort: 1
-      }),
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Anki',
-        title: 'Light Anki only',
-        description:
-          'Optional light review after the exam. Protect recovery.',
-        resource: 'Anki',
-        minutes: 20,
-        priority: 3,
-        sort: 2
-      })
-    ]
-  }
+  const plan =
+    student === 'Diya'
+      ? day.diya
+      : day.hamzah
 
-  if (isFullLengthReviewDay(iso)) {
-    return [
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Review',
-        title: 'Deep full-length review',
-        description:
-          'Review incorrect, guessed, uncertain, and poorly reasoned questions.',
-        resource: 'Full Length',
-        subject: 'Mixed',
-        minutes: 210,
-        priority: 1,
-        sort: 1
-      }),
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Weakness',
-        title: 'Turn FL misses into weakness targets',
-        description:
-          'Record recurring content and reasoning weaknesses for retesting.',
-        resource: 'Error Log',
-        subject: 'Mixed',
-        minutes: 40,
-        priority: 1,
-        sort: 2
-      }),
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'CARS',
-        title: '2 timed CARS passages + review',
-        resource: 'CARS',
-        subject: 'CARS',
-        minutes: 50,
-        priority: 2,
-        sort: 3
-      }),
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Anki',
-        title: 'Anki — 30 minutes',
-        resource: 'Anki',
-        minutes: 30,
-        priority: 2,
-        sort: 4
-      })
-    ]
-  }
+  if (!plan) return []
 
-  const phase = getPhase(config.hamzah?.phases || [], iso)
-  const ramp = getHamzahRamp(iso)
+  const output = (plan.tasks || []).map((item, index) => {
+    let title = item.title || item.type || 'Study Task'
+    let description = item.details || ''
+    let subject = item.subject || ''
+    let resource = item.resource || ''
 
-  if (!phase) return []
+    const isHamzahCurrentChapter =
+      student === 'Hamzah' &&
+      plan.chapter_mode === 'current_unfinished' &&
+      currentHamzahChapter &&
+      (
+        title === 'Continue Current Kaplan Chapter' ||
+        subject === 'Current Chapter'
+      )
 
-  const chapter = currentChapter
-  const chapterLabel = hamzahChapterLabel(chapter)
+    if (isHamzahCurrentChapter) {
+      const label = chapterLabel(currentHamzahChapter)
+
+      if (title === 'Continue Current Kaplan Chapter') {
+        title = `Kaplan: ${label}`
+      }
+
+      if (subject === 'Current Chapter') {
+        subject = currentHamzahChapter.subject
+      }
+
+      description = [
+        description,
+        `Current chapter: ${label}`
+      ]
+        .filter(Boolean)
+        .join(' ')
+    }
+
+    return makeTask({
+      student,
+      date: iso,
+      type: item.type || 'Study',
+      title,
+      description,
+      resource,
+      subject,
+      minutes: item.minutes || 0,
+      priority: item.priority || 2,
+      sort: index + 1
+    })
+  })
 
   /*
-   * During the ramp, the ramp values override full-volume
-   * phase values.
-   */
+    Hamzah's chapter completion is intentionally separate
+    from the scheduled workload.
 
-  const rampIsActive =
-    ramp && ramp.id !== 'full_workload'
+    The schedule can say "Continue Current Kaplan Chapter"
+    for multiple days. This checkbox is what actually advances
+    him to the next chapter.
+  */
 
-  if (rampIsActive) {
-    const target = Number(ramp.target_minutes) || 60
-    const qCount = Number(ramp.question_target) || 8
-    const cars = Number(ramp.cars_passages) || 1
-    const anki = Number(ramp.anki_minutes) || 10
-    const recall = Number(ramp.recall_minutes) || 5
-    const review = Number(ramp.review_minutes) || 10
-
-    /*
-     * We scale the content block around the remaining target.
-     * This prevents week one from becoming a fake 3-hour day.
-     */
-    const carsMinutes = cars * 18
-    const questionMinutes = Math.max(12, qCount * 1.4)
-
-    let contentMinutes =
-      target -
-      carsMinutes -
-      questionMinutes -
-      anki -
-      recall -
-      review
-
-    contentMinutes = clamp(
-      contentMinutes,
-      10,
-      Number(ramp.chapter_minutes) || target
+  const hasCurrentChapterContent =
+    student === 'Hamzah' &&
+    currentHamzahChapter &&
+    plan.chapter_mode === 'current_unfinished' &&
+    (plan.tasks || []).some(
+      item =>
+        item.title === 'Continue Current Kaplan Chapter' ||
+        item.subject === 'Current Chapter'
     )
 
-    return [
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Content',
-        title: `Kaplan: ${chapterLabel}`,
-        description:
-          'Continue the current chapter. You do not need to finish the entire chapter today during the ramp.',
-        resource: 'Kaplan Books',
-        subject: chapter?.subject || '',
-        minutes: contentMinutes,
-        priority: 1,
-        sort: 1
-      }),
-
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Questions',
-        title: `${qCount} related Kaplan questions`,
-        description:
-          'Apply the concepts from the current chapter. Flag misses and guesses.',
-        resource: 'Kaplan QBank',
-        subject: chapter?.subject || '',
-        minutes: questionMinutes,
-        priority: 1,
-        sort: 2
-      }),
-
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Review',
-        title: `Review misses — ${review} minutes`,
-        description:
-          'Understand why the wrong answer was wrong and why the correct answer is correct.',
-        resource: 'Kaplan QBank',
-        subject: chapter?.subject || '',
-        minutes: review,
-        priority: 1,
-        sort: 3
-      }),
-
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'CARS',
-        title: `${cars} timed CARS ${
-          cars === 1 ? 'passage' : 'passages'
-        } + review`,
-        resource: 'CARS',
-        subject: 'CARS',
-        minutes: carsMinutes,
-        priority: 2,
-        sort: 4
-      }),
-
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Anki',
-        title: `Anki — ${anki} minutes`,
-        description:
-          'Review due cards and add only meaningful concepts from the chapter or missed questions.',
-        resource: 'Anki',
-        minutes: anki,
-        priority: 2,
-        sort: 5
-      }),
-
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Recall',
-        title: `Closed-book recall — ${recall} minutes`,
-        description:
-          'Without notes, explain the most important concepts studied today.',
-        resource: 'Active Recall',
-        subject: chapter?.subject || '',
-        minutes: recall,
-        priority: 2,
-        sort: 6
-      }),
-
+  if (hasCurrentChapterContent) {
+    output.push(
       makeTask({
         student: 'Hamzah',
         date: iso,
         type: 'Chapter',
-        title: `Mark chapter complete: ${chapterLabel}`,
-        description: `chapter_sequence:${
-          chapter?.sequence || 1
-        } | Only check this when the entire Kaplan chapter, concept checks, and chapter questions are actually complete.`,
+        title: `Mark chapter complete: ${chapterLabel(
+          currentHamzahChapter
+        )}`,
+        description:
+          `chapter_sequence:${currentHamzahChapter.sequence} | ` +
+          'Only check this after the entire Kaplan chapter, concept checks, and chapter questions are complete.',
         resource: 'Kaplan Books',
-        subject: chapter?.subject || '',
+        subject: currentHamzahChapter.subject,
         minutes: 0,
         priority: 3,
-        sort: 7
-      })
-    ]
-  }
-
-  /*
-   * FULL WORKLOAD
-   */
-
-  const questionCount = average(
-    phase.question_target_min,
-    phase.question_target_max
-  )
-
-  const cars = average(
-    phase.cars_passages_min,
-    phase.cars_passages_max
-  )
-
-  const anki = Number(phase.anki_minutes) || 35
-  const recall = Number(phase.recall_minutes) || 20
-
-  const questionReview = Math.min(
-    Number(phase.question_review_minutes) || 120,
-    120
-  )
-
-  const stillContentHeavy =
-    phase.id === 'kaplan_uworld_transition' ||
-    phase.id === 'uworld_build'
-
-  const tasks = []
-
-  if (stillContentHeavy && chapter) {
-    tasks.push(
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Content',
-        title: `Kaplan: ${chapterLabel}`,
-        description:
-          phase.id === 'uworld_build'
-            ? 'Continue the next unfinished Kaplan chapter. Keep content efficient because UWorld is now the primary learning tool.'
-            : 'Continue the next unfinished Kaplan chapter, including concept checks and chapter questions.',
-        resource: 'Kaplan Books',
-        subject: chapter.subject,
-        minutes:
-          phase.id === 'uworld_build'
-            ? 60
-            : Math.min(Number(phase.chapter_minutes) || 90, 90),
-        priority: 1,
-        sort: 1
+        sort: output.length + 1
       })
     )
   }
 
-  tasks.push(
-    makeTask({
-      student: 'Hamzah',
-      date: iso,
-      type: 'Questions',
-      title: `${questionCount} ${phase.question_resource || phase.primary_resource} questions`,
-      description:
-        'Use timed passage-based practice. Flag incorrect, guessed, and uncertain questions.',
-      resource: phase.question_resource || phase.primary_resource,
-      subject: getSubject(
-        config.hamzah?.subject_rotation || [],
-        iso
-      ),
-      minutes: Math.max(
-        55,
-        Math.round(questionCount * 1.45)
-      ),
-      priority: 1,
-      sort: 2
-    }),
-
-    makeTask({
-      student: 'Hamzah',
-      date: iso,
-      type: 'Review',
-      title: 'Deep question review',
-      description:
-        'Review every incorrect, guessed, uncertain, and poorly reasoned correct answer.',
-      resource: phase.question_resource || phase.primary_resource,
-      subject: 'Mixed',
-      minutes: questionReview,
-      priority: 1,
-      sort: 3
-    }),
-
-    makeTask({
-      student: 'Hamzah',
-      date: iso,
-      type: 'CARS',
-      title: `${cars} timed CARS passages + review`,
-      description:
-        'Maintain daily CARS reasoning and review the logic behind missed answers.',
-      resource:
-        phase.primary_resource === 'AAMC'
-          ? 'AAMC CARS'
-          : 'CARS',
-      subject: 'CARS',
-      minutes: Math.max(45, cars * 22),
-      priority: 1,
-      sort: 4
-    }),
-
-    makeTask({
-      student: 'Hamzah',
-      date: iso,
-      type: 'Anki',
-      title: `Anki — ${anki} minutes`,
-      description:
-        'Due cards first. Add cards from meaningful misses and high-yield content gaps.',
-      resource: 'Anki',
-      minutes: anki,
-      priority: 2,
-      sort: 5
-    })
-  )
-
-  if (phase.targeted_repair_minutes) {
-    tasks.push(
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Content',
-        title: `Targeted weakness repair — ${phase.targeted_repair_minutes} minutes`,
-        description:
-          'Review only content gaps exposed by practice questions.',
-        resource: phase.secondary_resource || 'Targeted Review',
-        subject: 'Weakness',
-        minutes: phase.targeted_repair_minutes,
-        priority: 2,
-        sort: 6
-      })
-    )
-  }
-
-  tasks.push(
-    makeTask({
-      student: 'Hamzah',
-      date: iso,
-      type: 'Recall',
-      title: `Closed-book recall — ${recall} minutes`,
-      description:
-        'Explain major concepts, equations, pathways, and reasoning without notes.',
-      resource: 'Active Recall',
-      subject: 'Mixed',
-      minutes: recall,
-      priority: 2,
-      sort: 7
-    })
-  )
-
-  if (stillContentHeavy && chapter) {
-    tasks.push(
-      makeTask({
-        student: 'Hamzah',
-        date: iso,
-        type: 'Chapter',
-        title: `Mark chapter complete: ${chapterLabel}`,
-        description: `chapter_sequence:${chapter.sequence} | Only check this when the entire chapter, concept checks, and end-of-chapter work are complete.`,
-        resource: 'Kaplan Books',
-        subject: chapter.subject,
-        minutes: 0,
-        priority: 3,
-        sort: 8
-      })
-    )
-  }
-
-  return tasks
+  return output
 }
 
 /* ============================================================
-   APP
+   MAIN APP
    ============================================================ */
 
 export default function Home() {
@@ -990,6 +348,8 @@ export default function Home() {
   const [studySessions, setStudySessions] = useState([])
 
   const [selectedDate, setSelectedDate] = useState(localISO())
+  const [dataLoaded, setDataLoaded] = useState(false)
+  const [seeding, setSeeding] = useState(false)
 
   const uid = session?.user?.id || null
 
@@ -1019,6 +379,7 @@ export default function Home() {
 
   async function handleAuth(e) {
     e.preventDefault()
+
     setMessage('')
 
     if (!supabase) {
@@ -1045,15 +406,16 @@ export default function Home() {
       return
     }
 
-    setMessage(
-      authMode === 'signup'
-        ? 'Account created. Check your email if confirmation is required.'
-        : ''
-    )
+    if (authMode === 'signup') {
+      setMessage(
+        'Account created. Check your email if confirmation is required.'
+      )
+    }
   }
 
   async function signOut() {
     if (!supabase) return
+
     await supabase.auth.signOut()
   }
 
@@ -1063,6 +425,8 @@ export default function Home() {
 
   async function loadAll() {
     if (!uid || !supabase) return
+
+    setDataLoaded(false)
 
     const [
       taskResult,
@@ -1096,19 +460,38 @@ export default function Home() {
         .order('session_date', { ascending: false })
     ])
 
-    if (taskResult.data) setTasks(taskResult.data)
-    if (questionResult.data) setQuestionLogs(questionResult.data)
-    if (flResult.data) setFullLengths(flResult.data)
-    if (sessionResult.data) setStudySessions(sessionResult.data)
+    if (taskResult.error) {
+      console.error('daily_tasks:', taskResult.error)
+      setMessage(`Task load error: ${taskResult.error.message}`)
+    }
+
+    if (taskResult.data) {
+      setTasks(taskResult.data)
+    }
+
+    if (questionResult.data) {
+      setQuestionLogs(questionResult.data)
+    }
+
+    if (flResult.data) {
+      setFullLengths(flResult.data)
+    }
+
+    if (sessionResult.data) {
+      setStudySessions(sessionResult.data)
+    }
+
+    setDataLoaded(true)
   }
 
   useEffect(() => {
     if (!uid) return
+
     loadAll()
   }, [uid])
 
   /* ----------------------------------------------------------
-     CURRENT CHAPTER
+     CURRENT HAMZAH CHAPTER
      ---------------------------------------------------------- */
 
   const currentHamzahChapter = useMemo(
@@ -1116,93 +499,167 @@ export default function Home() {
     [tasks]
   )
 
+  const hamzahChapterProgress = useMemo(
+    () => getHamzahChapterProgress(tasks),
+    [tasks]
+  )
+
   /* ----------------------------------------------------------
-     SEED TODAY
+     SEED A DAY FROM SCHEDULE.JSON
      ---------------------------------------------------------- */
 
   async function seedDay(iso) {
-    if (!uid || !supabase) return
-
-    if (iso < PLAN_START || iso > EXAM_DATE) return
-
-    const existing = tasks.filter(
-      task =>
-        task.source_type === SOURCE_TYPE &&
-        task.task_date === iso
-    )
-
-    const existingStudents = new Set(
-      existing.map(task => task.student_name)
-    )
-
-    const inserts = []
-
-    if (!existingStudents.has('Diya')) {
-      generateDiyaTasks(iso).forEach(task => {
-        inserts.push({
-          ...task,
-          user_id: uid
-        })
-      })
+    if (
+      !uid ||
+      !supabase ||
+      !dataLoaded ||
+      seeding
+    ) {
+      return
     }
 
-    if (!existingStudents.has('Hamzah')) {
-      generateHamzahTasks(
-        iso,
-        currentHamzahChapter
-      ).forEach(task => {
-        inserts.push({
-          ...task,
-          user_id: uid
-        })
-      })
+    if (iso < PLAN_START || iso > EXAM_DATE) {
+      return
     }
 
-    if (!inserts.length) return
+    const scheduledDay = getScheduledDay(iso)
 
-    const { error } = await supabase
-      .from('daily_tasks')
-      .insert(inserts)
-
-    if (error) {
-      console.error(error)
+    if (!scheduledDay) {
       setMessage(
-        `Schedule error: ${error.message}`
+        `No schedule.json entry exists for ${iso}.`
       )
       return
     }
 
-    await loadAll()
+    setSeeding(true)
+
+    try {
+      /*
+        We check the DATABASE directly instead of relying only
+        on React state. This avoids the race condition that
+        caused Hamzah to show 0 of 0.
+      */
+
+      const { data: existing, error: existingError } =
+        await supabase
+          .from('daily_tasks')
+          .select('*')
+          .eq('user_id', uid)
+          .eq('source_type', SOURCE_TYPE)
+          .eq('task_date', iso)
+
+      if (existingError) {
+        throw existingError
+      }
+
+      const existingStudents = new Set(
+        (existing || [])
+          .map(task => task.student_name)
+          .filter(Boolean)
+      )
+
+      const inserts = []
+
+      if (!existingStudents.has('Diya')) {
+        const diyaTasks = generateScheduledTasks(
+          iso,
+          'Diya'
+        )
+
+        diyaTasks.forEach(task => {
+          inserts.push({
+            ...task,
+            user_id: uid
+          })
+        })
+      }
+
+      if (!existingStudents.has('Hamzah')) {
+        const hamzahTasks = generateScheduledTasks(
+          iso,
+          'Hamzah',
+          currentHamzahChapter
+        )
+
+        hamzahTasks.forEach(task => {
+          inserts.push({
+            ...task,
+            user_id: uid
+          })
+        })
+      }
+
+      if (!inserts.length) {
+        return
+      }
+
+      const { error: insertError } =
+        await supabase
+          .from('daily_tasks')
+          .insert(inserts)
+
+      if (insertError) {
+        throw insertError
+      }
+
+      await loadAll()
+    } catch (error) {
+      console.error(error)
+
+      setMessage(
+        `Schedule error: ${
+          error?.message || 'Unknown error'
+        }`
+      )
+    } finally {
+      setSeeding(false)
+    }
   }
 
+  /*
+    Only seed after database state has finished loading.
+  */
+
   useEffect(() => {
-    if (!uid) return
+    if (!uid || !dataLoaded) return
+
     seedDay(selectedDate)
-  }, [uid, selectedDate, tasks.length])
+  }, [uid, dataLoaded, selectedDate])
 
   /* ----------------------------------------------------------
      OVERFLOW
      ---------------------------------------------------------- */
 
   async function processOverflow() {
-    if (!uid || !supabase) return
+    if (!uid || !supabase || !dataLoaded) return
 
     const today = localISO()
 
-    if (today <= PLAN_START || today >= EXAM_DATE) return
+    if (today <= PLAN_START || today >= EXAM_DATE) {
+      return
+    }
 
-    if (isFullLengthDay(today)) return
+    const todaySchedule = getScheduledDay(today)
 
-    const { data: overdue, error } = await supabase
-      .from('daily_tasks')
-      .select('*')
-      .eq('user_id', uid)
-      .eq('source_type', SOURCE_TYPE)
-      .eq('completed', false)
-      .gte('task_date', PLAN_START)
-      .lt('task_date', today)
-      .neq('task_type', 'Exam')
-      .neq('task_type', 'Chapter')
+    if (
+      todaySchedule?.day_type === 'full_length' ||
+      todaySchedule?.day_type === 'exam'
+    ) {
+      return
+    }
+
+    const { data: overdue, error } =
+      await supabase
+        .from('daily_tasks')
+        .select('*')
+        .eq('user_id', uid)
+        .eq('source_type', SOURCE_TYPE)
+        .eq('completed', false)
+        .gte('task_date', PLAN_START)
+        .lt('task_date', today)
+        .neq('task_type', 'Exam')
+        .neq('task_type', 'Full Length')
+        .neq('task_type', 'Chapter')
 
     if (error) {
       console.error(error)
@@ -1210,7 +667,9 @@ export default function Home() {
     }
 
     for (const task of overdue || []) {
-      if (task.current_due_date === today) continue
+      if (task.current_due_date === today) {
+        continue
+      }
 
       await supabase
         .from('daily_tasks')
@@ -1229,7 +688,8 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (!uid) return
+    if (!uid || !dataLoaded) return
+
     processOverflow()
   }, [uid])
 
@@ -1244,17 +704,14 @@ export default function Home() {
 
     const payload = {
       completed,
+      completed_at: completed
+        ? new Date().toISOString()
+        : null,
       status: completed
         ? 'completed'
         : task.carried_forward
           ? 'overdue'
           : 'scheduled'
-    }
-
-    if (completed) {
-      payload.completed_at = new Date().toISOString()
-    } else {
-      payload.completed_at = null
     }
 
     const { error } = await supabase
@@ -1268,6 +725,11 @@ export default function Home() {
       return
     }
 
+    /*
+      If Hamzah just completed a chapter, reload first.
+      His next newly seeded date will use the next chapter.
+    */
+
     await loadAll()
   }
 
@@ -1275,7 +737,7 @@ export default function Home() {
      FILTERED TASKS
      ---------------------------------------------------------- */
 
-  const v2Tasks = useMemo(
+  const studyTasks = useMemo(
     () =>
       tasks.filter(
         task =>
@@ -1286,7 +748,7 @@ export default function Home() {
   )
 
   function studentTasks(student, iso) {
-    return v2Tasks
+    return studyTasks
       .filter(
         task =>
           task.student_name === student &&
@@ -1300,15 +762,27 @@ export default function Home() {
   }
 
   function studentOverflow(student, iso) {
-    return v2Tasks.filter(
-      task =>
-        task.student_name === student &&
-        !task.completed &&
-        task.carried_forward &&
-        task.current_due_date === iso &&
-        task.task_date < iso &&
-        task.task_type !== 'Chapter'
-    )
+    return studyTasks
+      .filter(
+        task =>
+          task.student_name === student &&
+          !task.completed &&
+          task.carried_forward &&
+          task.current_due_date === iso &&
+          task.task_date < iso &&
+          task.task_type !== 'Chapter'
+      )
+      .sort((a, b) => {
+        const priorityDiff =
+          (Number(a.priority) || 2) -
+          (Number(b.priority) || 2)
+
+        if (priorityDiff !== 0) {
+          return priorityDiff
+        }
+
+        return a.task_date.localeCompare(b.task_date)
+      })
   }
 
   const diyaSelectedTasks = studentTasks(
@@ -1341,6 +815,12 @@ export default function Home() {
     const payload = {
       user_id: uid,
       question_date: data.date,
+
+      /*
+        Existing schema does not yet have student_name
+        on question_blocks, so student is encoded into source.
+      */
+
       source: `${data.student} — ${data.source}`,
       subject: data.subject,
       total_questions: Number(data.total),
@@ -1397,10 +877,14 @@ export default function Home() {
   }
 
   /* ----------------------------------------------------------
-     STUDY SESSION
+     POMODORO SESSION LOGGING
      ---------------------------------------------------------- */
 
-  async function logSession(student, minutes, type = 'Focus') {
+  async function logSession(
+    student,
+    minutes,
+    type = 'Focus'
+  ) {
     if (!uid || !supabase || !minutes) return
 
     const payload = {
@@ -1448,6 +932,7 @@ export default function Home() {
         >
           <div className="logo">
             <span>M</span>
+
             <div>
               <b>MCAT TRACKER</b>
               <small>JANUARY 21, 2027</small>
@@ -1522,7 +1007,7 @@ export default function Home() {
   )
 
   /* ----------------------------------------------------------
-     MAIN APP
+     MAIN UI
      ---------------------------------------------------------- */
 
   return (
@@ -1611,13 +1096,17 @@ export default function Home() {
             hamzahTasks={hamzahSelectedTasks}
             diyaOverflow={diyaOverflow}
             hamzahOverflow={hamzahOverflow}
-            allTasks={v2Tasks}
+            allTasks={studyTasks}
             currentHamzahChapter={
               currentHamzahChapter
+            }
+            hamzahChapterProgress={
+              hamzahChapterProgress
             }
             toggleTask={toggleTask}
             logSession={logSession}
             seedDay={seedDay}
+            seeding={seeding}
           />
         )}
 
@@ -1628,7 +1117,7 @@ export default function Home() {
               setSelectedDate(date)
               setView('Today')
             }}
-            tasks={v2Tasks}
+            tasks={studyTasks}
           />
         )}
 
@@ -1648,18 +1137,19 @@ export default function Home() {
 
         {view === 'Together' && (
           <TogetherView
-            selectedDate={selectedDate}
-            tasks={v2Tasks}
             sessions={studySessions}
           />
         )}
 
         {view === 'Analytics' && (
           <AnalyticsView
-            tasks={v2Tasks}
+            tasks={studyTasks}
             questionLogs={questionLogs}
             fullLengths={fullLengths}
             sessions={studySessions}
+            hamzahChapterProgress={
+              hamzahChapterProgress
+            }
           />
         )}
       </main>
@@ -1668,7 +1158,7 @@ export default function Home() {
 }
 
 /* ============================================================
-   TODAY VIEW
+   TODAY
    ============================================================ */
 
 function TodayView({
@@ -1680,23 +1170,22 @@ function TodayView({
   hamzahOverflow,
   allTasks,
   currentHamzahChapter,
+  hamzahChapterProgress,
   toggleTask,
   logSession,
-  seedDay
+  seedDay,
+  seeding
 }) {
   const week = getWeekDates(selectedDate)
 
-  const diyaPhase = getPhase(
-    config.diya?.phases || [],
-    selectedDate
-  )
+  const scheduledDay =
+    getScheduledDay(selectedDate)
 
-  const hamzahPhase = getPhase(
-    config.hamzah?.phases || [],
-    selectedDate
-  )
+  const diyaPlan =
+    scheduledDay?.diya || null
 
-  const hamzahRamp = getHamzahRamp(selectedDate)
+  const hamzahPlan =
+    scheduledDay?.hamzah || null
 
   return (
     <>
@@ -1704,6 +1193,7 @@ function TodayView({
         <div className="weekTitle">
           <div>
             <small>STUDY WEEK</small>
+
             <h2>
               {formatDate(week[0])} –{' '}
               {formatDate(week[6], {
@@ -1730,20 +1220,22 @@ function TodayView({
               task => task.task_date === date
             )
 
-            const done =
-              dayTasks.length > 0 &&
-              dayTasks.every(
+            const actualTasks =
+              dayTasks.filter(
                 task =>
-                  task.completed ||
-                  task.task_type === 'Chapter'
+                  task.task_type !== 'Chapter'
+              )
+
+            const done =
+              actualTasks.length > 0 &&
+              actualTasks.every(
+                task => task.completed
               )
 
             const missed =
               date < localISO() &&
-              dayTasks.some(
-                task =>
-                  !task.completed &&
-                  task.task_type !== 'Chapter'
+              actualTasks.some(
+                task => !task.completed
               )
 
             return (
@@ -1782,10 +1274,12 @@ function TodayView({
                 </b>
 
                 <span>
-                  {dayTasks.filter(
-                    task => task.completed
-                  ).length}
-                  /{dayTasks.length || 0}
+                  {
+                    actualTasks.filter(
+                      task => task.completed
+                    ).length
+                  }
+                  /{actualTasks.length}
                 </span>
               </button>
             )
@@ -1793,18 +1287,34 @@ function TodayView({
         </div>
       </div>
 
+      {!scheduledDay && (
+        <div className="card message">
+          No V4 schedule exists for this date.
+        </div>
+      )}
+
+      {seeding && (
+        <div className="message">
+          Loading scheduled tasks...
+        </div>
+      )}
+
       <StudentHeader
         name="Diya"
-        subtitle={`${
-          STUDENTS.Diya.track
-        } • ${STUDENTS.Diya.target}+ Target`}
-        badge="5–6 HOURS / DAY"
+        subtitle={`${STUDENTS.Diya.track} • ${STUDENTS.Diya.target}+ Target`}
+        badge={
+          diyaPlan
+            ? formatMinutes(
+                diyaPlan.target_minutes
+              )
+            : 'NO PLAN'
+        }
       />
 
       <StudentDashboard
         student="Diya"
         date={selectedDate}
-        phase={diyaPhase}
+        plan={diyaPlan}
         tasks={diyaTasks}
         overflow={diyaOverflow}
         toggleTask={toggleTask}
@@ -1815,22 +1325,25 @@ function TodayView({
 
       <StudentHeader
         name="Hamzah"
-        subtitle={`${
-          STUDENTS.Hamzah.track
-        } • ${STUDENTS.Hamzah.target}+ Target`}
+        subtitle={`${STUDENTS.Hamzah.track} • ${STUDENTS.Hamzah.target}+ Target`}
         badge={
-          hamzahRamp?.label ||
-          'FULL MCAT WORKLOAD'
+          hamzahPlan
+            ? formatMinutes(
+                hamzahPlan.target_minutes
+              )
+            : 'NO PLAN'
         }
       />
 
       <HamzahDashboard
         date={selectedDate}
-        phase={hamzahPhase}
-        ramp={hamzahRamp}
+        plan={hamzahPlan}
         tasks={hamzahTasks}
         overflow={hamzahOverflow}
         chapter={currentHamzahChapter}
+        chapterProgress={
+          hamzahChapterProgress
+        }
         toggleTask={toggleTask}
         logSession={logSession}
       />
@@ -1867,19 +1380,23 @@ function StudentHeader({
 function StudentDashboard({
   student,
   date,
-  phase,
+  plan,
   tasks,
   overflow,
   toggleTask,
   logSession
 }) {
-  const minutes = taskMinutes(tasks)
-  const completed = tasks.filter(
-    task => task.completed
-  ).length
+  const realTasks = tasks.filter(
+    task => task.task_type !== 'Chapter'
+  )
 
-  const progress = taskProgress(tasks)
-  const overflowMinutes = taskMinutes(overflow)
+  const completed =
+    realTasks.filter(
+      task => task.completed
+    ).length
+
+  const minutes = taskMinutes(realTasks)
+  const progress = taskProgress(realTasks)
 
   return (
     <>
@@ -1892,7 +1409,7 @@ function StudentDashboard({
       <div className="todayHeading">
         <div>
           <small>
-            {phase?.name?.toUpperCase() ||
+            {plan?.phase?.toUpperCase() ||
               'STUDY PLAN'}
           </small>
 
@@ -1904,8 +1421,8 @@ function StudentDashboard({
           </h2>
 
           <p>
-            {phase?.notes ||
-              'Follow the scheduled study plan.'}
+            Questions → deep review → targeted
+            repair → Anki → recall.
           </p>
         </div>
 
@@ -1918,7 +1435,7 @@ function StudentDashboard({
           <span>
             <small>DONE</small>
             <b>
-              {completed}/{tasks.length}
+              {completed}/{realTasks.length}
             </b>
           </span>
 
@@ -1926,7 +1443,7 @@ function StudentDashboard({
             <small>OVERFLOW</small>
             <b>
               {formatMinutes(
-                overflowMinutes
+                taskMinutes(overflow)
               )}
             </b>
           </span>
@@ -1936,7 +1453,7 @@ function StudentDashboard({
       <ProgressCard
         progress={progress}
         completed={completed}
-        total={tasks.length}
+        total={realTasks.length}
         minutes={minutes}
       />
 
@@ -1948,10 +1465,7 @@ function StudentDashboard({
               <h2>Diya's Work</h2>
             </div>
 
-            <span>
-              {phase?.primary_resource ||
-                'MCAT'}
-            </span>
+            <span>{plan?.phase}</span>
           </div>
 
           <div className="taskList">
@@ -1965,8 +1479,7 @@ function StudentDashboard({
               ))
             ) : (
               <p className="empty">
-                No scheduled tasks for this
-                date.
+                No tasks loaded for this date.
               </p>
             )}
           </div>
@@ -1987,26 +1500,29 @@ function StudentDashboard({
 
 function HamzahDashboard({
   date,
-  phase,
-  ramp,
+  plan,
   tasks,
   overflow,
   chapter,
+  chapterProgress,
   toggleTask,
   logSession
 }) {
-  const minutes = taskMinutes(tasks)
-  const completed = tasks.filter(
-    task => task.completed
-  ).length
+  const realTasks = tasks.filter(
+    task => task.task_type !== 'Chapter'
+  )
 
-  const progress = taskProgress(tasks)
-  const overflowMinutes = taskMinutes(overflow)
+  const chapterTasks = tasks.filter(
+    task => task.task_type === 'Chapter'
+  )
 
-  const completedChapters =
-    getCompletedHamzahChapterSequences(
-      tasks
-    ).size
+  const completed =
+    realTasks.filter(
+      task => task.completed
+    ).length
+
+  const minutes = taskMinutes(realTasks)
+  const progress = taskProgress(realTasks)
 
   return (
     <>
@@ -2020,50 +1536,74 @@ function HamzahDashboard({
         <div className="contentHero">
           <div>
             <small>
-              {ramp?.label?.toUpperCase() ||
-                phase?.name?.toUpperCase() ||
+              {plan?.phase?.toUpperCase() ||
                 'CONTENT + QUESTIONS'}
             </small>
 
             <h2>
-              {phase?.name ||
+              {plan?.study_phase ||
+                plan?.phase ||
                 'Hamzah MCAT Plan'}
             </h2>
 
             <p>
-              {ramp?.notes ||
-                phase?.notes ||
-                'Build content knowledge while steadily increasing question practice.'}
+              Kaplan content progresses by
+              completion, while daily question
+              volume increases toward UWorld
+              and AAMC.
             </p>
           </div>
 
           <div className="chapterCounter">
-            <b>{chapter?.sequence || 58}</b>
-            <span>/ 58</span>
+            <b>
+              {chapter
+                ? chapter.sequence
+                : chapterProgress.total}
+            </b>
+
+            <span>
+              / {chapterProgress.total}
+            </span>
           </div>
         </div>
 
-        {chapter && (
-          <div className="activeChapterCard">
-            <small>
-              CURRENT KAPLAN CHAPTER
-            </small>
+        <div className="activeChapterCard">
+          <small>
+            CURRENT KAPLAN CHAPTER
+          </small>
 
-            <h2>
-              {chapter.subject} Ch.{' '}
-              {chapter.chapter}
-            </h2>
+          {chapter ? (
+            <>
+              <h2>
+                {chapter.subject} Ch.{' '}
+                {chapter.chapter}
+              </h2>
 
-            <p>{chapter.title}</p>
-          </div>
-        )}
+              <p>{chapter.title}</p>
+
+              <span>
+                {chapterProgress.completed} of{' '}
+                {chapterProgress.total} chapters
+                completed
+              </span>
+            </>
+          ) : (
+            <>
+              <h2>Kaplan Complete</h2>
+
+              <p>
+                All 58 scheduled Kaplan content
+                units are complete.
+              </p>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="todayHeading">
         <div>
           <small>
-            {ramp?.label?.toUpperCase() ||
-              phase?.name?.toUpperCase() ||
+            {plan?.phase?.toUpperCase() ||
               'HAMZAH'}
           </small>
 
@@ -2075,11 +1615,11 @@ function HamzahDashboard({
           </h2>
 
           <p>
-            {ramp?.target_minutes
-              ? `Target workload: approximately ${formatMinutes(
-                  ramp.target_minutes
+            {plan
+              ? `Target workload: ${formatMinutes(
+                  plan.target_minutes
                 )}.`
-              : 'Full MCAT study workload.'}
+              : 'No scheduled workload.'}
           </p>
         </div>
 
@@ -2092,7 +1632,7 @@ function HamzahDashboard({
           <span>
             <small>DONE</small>
             <b>
-              {completed}/{tasks.length}
+              {completed}/{realTasks.length}
             </b>
           </span>
 
@@ -2100,7 +1640,7 @@ function HamzahDashboard({
             <small>OVERFLOW</small>
             <b>
               {formatMinutes(
-                overflowMinutes
+                taskMinutes(overflow)
               )}
             </b>
           </span>
@@ -2110,7 +1650,7 @@ function HamzahDashboard({
       <ProgressCard
         progress={progress}
         completed={completed}
-        total={tasks.length}
+        total={realTasks.length}
         minutes={minutes}
       />
 
@@ -2122,16 +1662,12 @@ function HamzahDashboard({
               <h2>Hamzah's Work</h2>
             </div>
 
-            <span>
-              {phase?.question_resource ||
-                phase?.primary_resource ||
-                'Kaplan'}
-            </span>
+            <span>{plan?.phase}</span>
           </div>
 
           <div className="taskList">
-            {tasks.length ? (
-              tasks.map(task => (
+            {realTasks.length ? (
+              realTasks.map(task => (
                 <TaskRow
                   key={task.id}
                   task={task}
@@ -2140,11 +1676,26 @@ function HamzahDashboard({
               ))
             ) : (
               <p className="empty">
-                No scheduled tasks for this
-                date.
+                No tasks loaded for this date.
               </p>
             )}
           </div>
+
+          {chapterTasks.length > 0 && (
+            <div className="chapterChecklist">
+              <small>
+                CHAPTER PROGRESSION
+              </small>
+
+              {chapterTasks.map(task => (
+                <TaskRow
+                  key={task.id}
+                  task={task}
+                  onToggle={toggleTask}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         <Pomodoro
@@ -2157,7 +1708,7 @@ function HamzahDashboard({
 }
 
 /* ============================================================
-   OVERFLOW PANEL
+   OVERFLOW
    ============================================================ */
 
 function OverflowPanel({
@@ -2169,15 +1720,18 @@ function OverflowPanel({
 
   const minutes = taskMinutes(overflow)
 
+  const warning =
+    config.global_rules
+      ?.overflow_warning_minutes || 120
+
+  const critical =
+    config.global_rules
+      ?.overflow_critical_minutes || 240
+
   const level =
-    minutes >=
-    (config.global_rules
-      ?.overflow_critical_minutes || 240)
+    minutes >= critical
       ? 'critical'
-      : minutes >=
-          (config.global_rules
-            ?.overflow_warning_minutes ||
-            120)
+      : minutes >= warning
         ? 'warning'
         : ''
 
@@ -2200,8 +1754,9 @@ function OverflowPanel({
       </div>
 
       <p>
-        Complete important carried work before
-        lower-priority new work.
+        These tasks were missed on an earlier
+        date. Their original calendar date
+        remains unchanged.
       </p>
 
       <div className="taskList">
@@ -2242,11 +1797,6 @@ function TaskRow({
           task.completed ? 'done' : ''
         }`}
         onClick={() => onToggle(task)}
-        title={
-          task.completed
-            ? 'Mark incomplete'
-            : 'Mark complete'
-        }
       >
         {task.completed ? '✓' : ''}
       </button>
@@ -2264,24 +1814,30 @@ function TaskRow({
           <span>{task.description}</span>
         )}
 
-        {Number(task.estimated_minutes) >
-          0 && (
-          <span>
-            {formatMinutes(
-              task.estimated_minutes
-            )}
-            {task.resource
-              ? ` • ${task.resource}`
-              : ''}
-          </span>
-        )}
+        <span>
+          {Number(task.estimated_minutes) > 0
+            ? formatMinutes(
+                task.estimated_minutes
+              )
+            : ''}
+
+          {task.resource
+            ? `${
+                Number(
+                  task.estimated_minutes
+                ) > 0
+                  ? ' • '
+                  : ''
+              }${task.resource}`
+            : ''}
+        </span>
       </div>
     </div>
   )
 }
 
 /* ============================================================
-   PROGRESS CARD
+   PROGRESS
    ============================================================ */
 
 function ProgressCard({
@@ -2294,6 +1850,7 @@ function ProgressCard({
     <div className="card progressCard">
       <div>
         <b>Daily Progress</b>
+
         <span>
           {completed} of {total} tasks complete
           • {formatMinutes(minutes)} planned
@@ -2322,17 +1879,11 @@ function Pomodoro({
   onLog
 }) {
   const [mode, setMode] = useState('Focus')
-  const [focusMinutes, setFocusMinutes] =
-    useState(50)
-  const [breakMinutes, setBreakMinutes] =
-    useState(10)
+  const [focusMinutes, setFocusMinutes] = useState(50)
+  const [breakMinutes, setBreakMinutes] = useState(10)
 
-  const [seconds, setSeconds] = useState(
-    focusMinutes * 60
-  )
-
-  const [running, setRunning] =
-    useState(false)
+  const [seconds, setSeconds] = useState(50 * 60)
+  const [running, setRunning] = useState(false)
 
   const intervalRef = useRef(null)
 
@@ -2347,7 +1898,8 @@ function Pomodoro({
   }, [
     focusMinutes,
     breakMinutes,
-    mode
+    mode,
+    running
   ])
 
   useEffect(() => {
@@ -2357,8 +1909,8 @@ function Pomodoro({
     }
 
     intervalRef.current = setInterval(() => {
-      setSeconds(prev => {
-        if (prev <= 1) {
+      setSeconds(previous => {
+        if (previous <= 1) {
           clearInterval(intervalRef.current)
           setRunning(false)
 
@@ -2373,12 +1925,13 @@ function Pomodoro({
           return 0
         }
 
-        return prev - 1
+        return previous - 1
       })
     }, 1000)
 
-    return () =>
+    return () => {
       clearInterval(intervalRef.current)
+    }
   }, [
     running,
     mode,
@@ -2390,6 +1943,7 @@ function Pomodoro({
   function switchMode(nextMode) {
     setRunning(false)
     setMode(nextMode)
+
     setSeconds(
       (nextMode === 'Focus'
         ? focusMinutes
@@ -2422,6 +1976,7 @@ function Pomodoro({
           <small>
             {student.toUpperCase()}
           </small>
+
           <h2>Pomodoro</h2>
         </div>
 
@@ -2453,6 +2008,7 @@ function Pomodoro({
       <div className="timerInputs">
         <label>
           Focus
+
           <input
             type="number"
             min="1"
@@ -2467,6 +2023,7 @@ function Pomodoro({
 
         <label>
           Break
+
           <input
             type="number"
             min="1"
@@ -2483,7 +2040,7 @@ function Pomodoro({
       <button
         className="timerButton"
         onClick={() =>
-          setRunning(prev => !prev)
+          setRunning(previous => !previous)
         }
       >
         {running ? 'Pause' : 'Start'}
@@ -2509,8 +2066,7 @@ function CalendarView({
   setSelectedDate,
   tasks
 }) {
-  const [monthOffset, setMonthOffset] =
-    useState(0)
+  const [monthOffset, setMonthOffset] = useState(0)
 
   const base = dateFromISO(selectedDate)
 
@@ -2635,56 +2191,48 @@ function CalendarView({
             task => task.task_date === date
           )
 
-          const realTasks = dayTasks.filter(
-            task =>
-              task.task_type !== 'Chapter'
-          )
+          const actualTasks =
+            dayTasks.filter(
+              task =>
+                task.task_type !== 'Chapter'
+            )
 
           const complete =
-            realTasks.length > 0 &&
-            realTasks.every(
+            actualTasks.length > 0 &&
+            actualTasks.every(
               task => task.completed
             )
 
           const missed =
             date < localISO() &&
-            realTasks.some(
+            actualTasks.some(
               task => !task.completed
             )
 
           const future =
             date > localISO()
 
-          const diyaDone =
-            dayTasks.filter(
+          const diyaTasks =
+            actualTasks.filter(
               task =>
-                task.student_name ===
-                  'Diya' &&
-                task.completed
-            ).length
+                task.student_name === 'Diya'
+            )
 
-          const diyaTotal =
-            dayTasks.filter(
+          const hamzahTasks =
+            actualTasks.filter(
               task =>
                 task.student_name ===
-                  'Diya' &&
-                task.task_type !== 'Chapter'
+                'Hamzah'
+            )
+
+          const diyaDone =
+            diyaTasks.filter(
+              task => task.completed
             ).length
 
           const hamzahDone =
-            dayTasks.filter(
-              task =>
-                task.student_name ===
-                  'Hamzah' &&
-                task.completed
-            ).length
-
-          const hamzahTotal =
-            dayTasks.filter(
-              task =>
-                task.student_name ===
-                  'Hamzah' &&
-                task.task_type !== 'Chapter'
+            hamzahTasks.filter(
+              task => task.completed
             ).length
 
           return (
@@ -2720,12 +2268,12 @@ function CalendarView({
               </b>
 
               <span>
-                D {diyaDone}/{diyaTotal}
+                D {diyaDone}/{diyaTasks.length}
               </span>
 
               <span>
                 H {hamzahDone}/
-                {hamzahTotal}
+                {hamzahTasks.length}
               </span>
             </button>
           )
@@ -2743,19 +2291,13 @@ function QuestionsView({
   logs,
   onAdd
 }) {
-  const [student, setStudent] =
-    useState('Diya')
-  const [date, setDate] =
-    useState(localISO())
-  const [source, setSource] =
-    useState('UWorld')
-  const [subject, setSubject] =
-    useState('B/B')
+  const [student, setStudent] = useState('Diya')
+  const [date, setDate] = useState(localISO())
+  const [source, setSource] = useState('UWorld')
+  const [subject, setSubject] = useState('B/B')
   const [total, setTotal] = useState(20)
-  const [correct, setCorrect] =
-    useState(0)
-  const [timed, setTimed] =
-    useState(true)
+  const [correct, setCorrect] = useState(0)
+  const [timed, setTimed] = useState(true)
 
   async function submit(e) {
     e.preventDefault()
@@ -2788,6 +2330,7 @@ function QuestionsView({
 
         <label>
           Student
+
           <select
             value={student}
             onChange={e =>
@@ -2801,6 +2344,7 @@ function QuestionsView({
 
         <label>
           Date
+
           <input
             type="date"
             value={date}
@@ -2812,6 +2356,7 @@ function QuestionsView({
 
         <label>
           Resource
+
           <select
             value={source}
             onChange={e =>
@@ -2822,14 +2367,19 @@ function QuestionsView({
             <option>Kaplan QBank</option>
             <option>UWorld</option>
             <option>AAMC</option>
-            <option>AAMC Section Bank</option>
-            <option>AAMC Question Pack</option>
+            <option>
+              AAMC Section Bank
+            </option>
+            <option>
+              AAMC Question Pack
+            </option>
             <option>Other</option>
           </select>
         </label>
 
         <label>
           Section
+
           <select
             value={subject}
             onChange={e =>
@@ -2846,6 +2396,7 @@ function QuestionsView({
 
         <label>
           Questions
+
           <input
             type="number"
             min="1"
@@ -2858,6 +2409,7 @@ function QuestionsView({
 
         <label>
           Correct
+
           <input
             type="number"
             min="0"
@@ -2877,6 +2429,7 @@ function QuestionsView({
               setTimed(e.target.checked)
             }
           />
+
           Timed
         </label>
 
@@ -2896,16 +2449,21 @@ function QuestionsView({
         <div className="logList">
           {logs.length ? (
             logs.slice(0, 30).map(log => {
+              const totalQuestions =
+                Number(
+                  log.total_questions
+                ) || 0
+
+              const correctQuestions =
+                Number(
+                  log.correct_questions
+                ) || 0
+
               const pct =
-                Number(log.total_questions) >
-                0
+                totalQuestions > 0
                   ? Math.round(
-                      (Number(
-                        log.correct_questions
-                      ) /
-                        Number(
-                          log.total_questions
-                        )) *
+                      (correctQuestions /
+                        totalQuestions) *
                         100
                     )
                   : 0
@@ -2925,10 +2483,8 @@ function QuestionsView({
 
                     <b>
                       {log.subject} •{' '}
-                      {
-                        log.correct_questions
-                      }
-                      /{log.total_questions}
+                      {correctQuestions}/
+                      {totalQuestions}
                     </b>
                   </div>
 
@@ -2955,15 +2511,12 @@ function FullLengthView({
   fullLengths,
   onAdd
 }) {
-  const [student, setStudent] =
-    useState('Diya')
-  const [date, setDate] =
-    useState(localISO())
-  const [name, setName] =
-    useState('AAMC FL')
+  const [student, setStudent] = useState('Diya')
+  const [date, setDate] = useState(localISO())
+  const [name, setName] = useState('AAMC FL')
+
   const [cp, setCp] = useState(125)
-  const [cars, setCars] =
-    useState(125)
+  const [cars, setCars] = useState(125)
   const [bb, setBb] = useState(125)
   const [ps, setPs] = useState(125)
 
@@ -2985,12 +2538,13 @@ function FullLengthView({
     <>
       <div className="card togetherHero">
         <small>SHARED MILESTONES</small>
+
         <h2>
           Synchronized Full-Lengths
         </h2>
 
         <p>
-          Diya and Hamzah take scheduled
+          Both students take scheduled
           full-lengths on the same day and
           perform deep review the following
           day.
@@ -3011,6 +2565,7 @@ function FullLengthView({
 
           <label>
             Student
+
             <select
               value={student}
               onChange={e =>
@@ -3024,6 +2579,7 @@ function FullLengthView({
 
           <label>
             Exam Date
+
             <input
               type="date"
               value={date}
@@ -3035,6 +2591,7 @@ function FullLengthView({
 
           <label>
             Exam
+
             <input
               value={name}
               onChange={e =>
@@ -3045,6 +2602,7 @@ function FullLengthView({
 
           <label>
             C/P
+
             <input
               type="number"
               min="118"
@@ -3058,6 +2616,7 @@ function FullLengthView({
 
           <label>
             CARS
+
             <input
               type="number"
               min="118"
@@ -3071,6 +2630,7 @@ function FullLengthView({
 
           <label>
             B/B
+
             <input
               type="number"
               min="118"
@@ -3084,6 +2644,7 @@ function FullLengthView({
 
           <label>
             P/S
+
             <input
               type="number"
               min="118"
@@ -3125,10 +2686,10 @@ function FullLengthView({
                     <b>{fl.exam_name}</b>
 
                     <span>
-                      C/P {fl.cp_score} •
-                      CARS {fl.cars_score} •
-                      B/B {fl.bb_score} •
-                      P/S {fl.ps_score}
+                      C/P {fl.cp_score} • CARS{' '}
+                      {fl.cars_score} • B/B{' '}
+                      {fl.bb_score} • P/S{' '}
+                      {fl.ps_score}
                     </span>
                   </div>
 
@@ -3154,8 +2715,6 @@ function FullLengthView({
    ============================================================ */
 
 function TogetherView({
-  selectedDate,
-  tasks,
   sessions
 }) {
   const flDates =
@@ -3164,18 +2723,13 @@ function TogetherView({
   return (
     <>
       <div className="card togetherHero">
-        <small>
-          DIYA + HAMZAH
-        </small>
+        <small>DIYA + HAMZAH</small>
 
         <h2>Study Together</h2>
 
         <p>
-          One MCAT date, two individual
-          checklists. Shared milestones are
-          used for full lengths, full-length
-          review, CARS, weakness review, and
-          study sessions.
+          One MCAT date, one shared login, and
+          two independent daily checklists.
         </p>
       </div>
 
@@ -3189,15 +2743,16 @@ function TogetherView({
           </div>
 
           <div className="partnerList">
-            {flDates.map((date, i) => (
+            {flDates.map((date, index) => (
               <div
                 className="partnerRow"
                 key={date}
               >
                 <div>
                   <small>
-                    FULL LENGTH {i + 1}
+                    FULL LENGTH {index + 1}
                   </small>
+
                   <b>
                     {formatDate(date, {
                       weekday: true,
@@ -3211,9 +2766,12 @@ function TogetherView({
                     ? 'PAST'
                     : date === localISO()
                       ? 'TODAY'
-                      : `${daysBetween(
-                          localISO(),
-                          date
+                      : `${Math.max(
+                          0,
+                          daysBetween(
+                            localISO(),
+                            date
+                          )
                         )} DAYS`}
                 </strong>
               </div>
@@ -3246,7 +2804,9 @@ function TogetherView({
                       </small>
 
                       <b>
-                        {session.session_type}
+                        {
+                          session.session_type
+                        }
                       </b>
                     </div>
 
@@ -3277,14 +2837,19 @@ function AnalyticsView({
   tasks,
   questionLogs,
   fullLengths,
-  sessions
+  sessions,
+  hamzahChapterProgress
 }) {
   const diyaTasks = tasks.filter(
-    task => task.student_name === 'Diya'
+    task =>
+      task.student_name === 'Diya' &&
+      task.task_type !== 'Chapter'
   )
 
   const hamzahTasks = tasks.filter(
-    task => task.student_name === 'Hamzah'
+    task =>
+      task.student_name === 'Hamzah' &&
+      task.task_type !== 'Chapter'
   )
 
   const diyaDone = diyaTasks.filter(
@@ -3299,8 +2864,7 @@ function AnalyticsView({
     questionLogs.reduce(
       (sum, log) =>
         sum +
-        (Number(log.total_questions) ||
-          0),
+        (Number(log.total_questions) || 0),
       0
     )
 
@@ -3308,34 +2872,37 @@ function AnalyticsView({
     questionLogs.reduce(
       (sum, log) =>
         sum +
-        (Number(log.correct_questions) ||
-          0),
+        (Number(log.correct_questions) || 0),
       0
     )
 
-  const accuracy = totalQuestions
-    ? Math.round(
-        (totalCorrect / totalQuestions) *
-          100
-      )
-    : 0
-
-  const focusMinutes = sessions.reduce(
-    (sum, session) =>
-      sum +
-      (Number(session.actual_minutes) ||
-        0),
-    0
-  )
-
-  const bestFL = fullLengths.length
-    ? Math.max(
-        ...fullLengths.map(
-          fl =>
-            Number(fl.total_score) || 0
+  const accuracy =
+    totalQuestions > 0
+      ? Math.round(
+          (totalCorrect / totalQuestions) *
+            100
         )
-      )
-    : 0
+      : 0
+
+  const focusMinutes =
+    sessions.reduce(
+      (sum, session) =>
+        sum +
+        (Number(
+          session.actual_minutes
+        ) || 0),
+      0
+    )
+
+  const bestFL =
+    fullLengths.length > 0
+      ? Math.max(
+          ...fullLengths.map(
+            fl =>
+              Number(fl.total_score) || 0
+          )
+        )
+      : 0
 
   return (
     <div className="analyticsGrid">
@@ -3365,6 +2932,12 @@ function AnalyticsView({
             : '0%'
         }
         detail={`${hamzahDone}/${hamzahTasks.length} tasks`}
+      />
+
+      <MetricCard
+        label="HAMZAH KAPLAN"
+        value={`${hamzahChapterProgress.completed}/${hamzahChapterProgress.total}`}
+        detail="chapters completed"
       />
 
       <MetricCard
