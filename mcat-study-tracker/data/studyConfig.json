@@ -1,5 +1,6 @@
 {
-  "version": 3,
+  "version": 4,
+
   "exam": {
     "date": "2027-01-21",
     "name": "MCAT",
@@ -7,6 +8,7 @@
   },
 
   "global_rules": {
+    "plan_start": "2026-10-03",
     "normal_daily_hours_min": 5,
     "normal_daily_hours_max": 6,
     "light_day_hours": 3,
@@ -32,7 +34,8 @@
       "review_guessed_correct": true,
       "review_uncertain_correct": true,
       "daily_anki": true,
-      "daily_cars": true
+      "daily_cars": true,
+      "closed_book_recall": true
     },
 
     "phases": [
@@ -45,12 +48,14 @@
         "secondary_resource": "Error Log",
         "question_target_min": 50,
         "question_target_max": 60,
+        "targeted_questions": 15,
         "cars_passages_min": 2,
         "cars_passages_max": 3,
         "anki_minutes": 45,
         "targeted_repair_minutes": 45,
+        "recall_minutes": 20,
         "review_minutes": 150,
-        "notes": "Use mixed section practice. Questions diagnose weaknesses. Do not perform broad passive content review."
+        "notes": "Use mixed section practice. Questions diagnose weaknesses. Do not perform another broad passive content review."
       },
 
       {
@@ -62,12 +67,14 @@
         "secondary_resource": "Kaplan QBank",
         "question_target_min": 60,
         "question_target_max": 70,
+        "targeted_questions": 15,
         "cars_passages_min": 2,
         "cars_passages_max": 3,
         "anki_minutes": 45,
         "targeted_repair_minutes": 45,
+        "recall_minutes": 20,
         "review_minutes": 180,
-        "notes": "UWorld becomes the primary science and P/S learning tool. Review every incorrect, guessed, or uncertain question."
+        "notes": "UWorld becomes the primary science and P/S learning tool. Review every incorrect, guessed, and uncertain question."
       },
 
       {
@@ -79,10 +86,12 @@
         "secondary_resource": "AAMC",
         "question_target_min": 70,
         "question_target_max": 80,
+        "targeted_questions": 15,
         "cars_passages_min": 3,
         "cars_passages_max": 4,
         "anki_minutes": 40,
         "targeted_repair_minutes": 40,
+        "recall_minutes": 20,
         "review_minutes": 180,
         "notes": "Increase mixed timed work. Begin integrating official AAMC material while continuing UWorld weakness repair."
       },
@@ -96,10 +105,12 @@
         "secondary_resource": "UWorld",
         "question_target_min": 60,
         "question_target_max": 70,
+        "targeted_questions": 15,
         "cars_passages_min": 3,
         "cars_passages_max": 4,
         "anki_minutes": 35,
         "targeted_repair_minutes": 35,
+        "recall_minutes": 20,
         "review_minutes": 180,
         "notes": "Official AAMC reasoning becomes the priority. Use UWorld primarily for targeted weakness repair."
       },
@@ -113,12 +124,14 @@
         "secondary_resource": "UWorld Targeted",
         "question_target_min": 60,
         "question_target_max": 80,
+        "targeted_questions": 15,
         "cars_passages_min": 3,
         "cars_passages_max": 5,
         "anki_minutes": 30,
         "targeted_repair_minutes": 30,
+        "recall_minutes": 15,
         "review_minutes": 180,
-        "notes": "Prioritize Section Bank and other official AAMC material. Review reasoning deeply."
+        "notes": "Prioritize Section Bank and other official AAMC material. Review reasoning deeply and use UWorld only for targeted weaknesses."
       },
 
       {
@@ -130,10 +143,12 @@
         "secondary_resource": "Error Log",
         "question_target_min": 30,
         "question_target_max": 50,
+        "targeted_questions": 10,
         "cars_passages_min": 2,
         "cars_passages_max": 3,
         "anki_minutes": 25,
         "targeted_repair_minutes": 30,
+        "recall_minutes": 15,
         "review_minutes": 120,
         "notes": "Reduce volume. Prioritize official reasoning, high-yield weaknesses, sleep, timing, and confidence. Do not cram."
       },
@@ -144,12 +159,15 @@
         "start": "2027-01-21",
         "end": "2027-01-21",
         "primary_resource": "MCAT",
+        "secondary_resource": null,
         "question_target_min": 0,
         "question_target_max": 0,
+        "targeted_questions": 0,
         "cars_passages_min": 0,
         "cars_passages_max": 0,
         "anki_minutes": 0,
         "targeted_repair_minutes": 0,
+        "recall_minutes": 0,
         "review_minutes": 0,
         "notes": "MCAT DAY. No scheduled study workload."
       }
@@ -162,7 +180,14 @@
       "B/B",
       "C/P",
       "Mixed"
-    ]
+    ],
+
+    "light_day": {
+      "cars_passages": 2,
+      "anki_minutes": 35,
+      "error_review_minutes": 60,
+      "catch_up_minutes": 75
+    }
   },
 
   "hamzah": {
@@ -184,8 +209,101 @@
       "daily_anki": true,
       "chapters_are_sequential": true,
       "next_chapter_waits_for_previous": true,
-      "transition_to_questions_during_content": true
+      "transition_to_questions_during_content": true,
+      "chapter_progress_is_completion_based": true
     },
+
+    "ramp": [
+      {
+        "id": "ramp_week_1",
+        "label": "Week 1 - Habit Building",
+        "start": "2026-10-03",
+        "end": "2026-10-09",
+        "target_minutes": 60,
+        "question_target": 8,
+        "cars_passages": 1,
+        "anki_minutes": 10,
+        "recall_minutes": 5,
+        "review_minutes": 10,
+        "chapter_minutes": 20,
+        "notes": "Start small and establish consistency. Do not force an entire Kaplan chapter into one hour. Continue the current chapter across days until it is completed."
+      },
+
+      {
+        "id": "ramp_week_2",
+        "label": "Week 2 - Foundation",
+        "start": "2026-10-10",
+        "end": "2026-10-16",
+        "target_minutes": 120,
+        "question_target": 15,
+        "cars_passages": 1,
+        "anki_minutes": 20,
+        "recall_minutes": 10,
+        "review_minutes": 25,
+        "chapter_minutes": 50,
+        "notes": "Increase Kaplan content time and begin doing a more meaningful related question block."
+      },
+
+      {
+        "id": "ramp_week_3",
+        "label": "Week 3 - Building Volume",
+        "start": "2026-10-17",
+        "end": "2026-10-23",
+        "target_minutes": 180,
+        "question_target": 20,
+        "cars_passages": 2,
+        "anki_minutes": 25,
+        "recall_minutes": 15,
+        "review_minutes": 40,
+        "chapter_minutes": 70,
+        "notes": "Build question volume and spend more time reviewing misses while continuing sequential Kaplan content."
+      },
+
+      {
+        "id": "ramp_week_4",
+        "label": "Week 4 - Extended Study",
+        "start": "2026-10-24",
+        "end": "2026-10-30",
+        "target_minutes": 240,
+        "question_target": 25,
+        "cars_passages": 2,
+        "anki_minutes": 30,
+        "recall_minutes": 15,
+        "review_minutes": 60,
+        "chapter_minutes": 90,
+        "notes": "Use a complete content-plus-questions structure. Deep review becomes a major part of the day."
+      },
+
+      {
+        "id": "ramp_week_5",
+        "label": "Week 5 - Near Full Load",
+        "start": "2026-10-31",
+        "end": "2026-11-06",
+        "target_minutes": 300,
+        "question_target": 30,
+        "cars_passages": 2,
+        "anki_minutes": 35,
+        "recall_minutes": 20,
+        "review_minutes": 75,
+        "chapter_minutes": 105,
+        "notes": "Approach a normal MCAT study day. Continue Kaplan but increase passage-based practice and review."
+      },
+
+      {
+        "id": "full_workload",
+        "label": "Full MCAT Workload",
+        "start": "2026-11-07",
+        "end": "2027-01-20",
+        "target_minutes": 330,
+        "question_target": null,
+        "cars_passages": null,
+        "anki_minutes": null,
+        "recall_minutes": null,
+        "review_minutes": null,
+        "chapter_minutes": null,
+        "notes": "Use the active study phase to determine question volume, resources, CARS, Anki, content repair, and review."
+      }
+    ],
 
     "phases": [
       {
@@ -203,7 +321,8 @@
         "chapter_minutes": 120,
         "chapter_review_minutes": 45,
         "question_review_minutes": 60,
-        "notes": "Build the content foundation while immediately applying each chapter with Kaplan questions. CARS and Anki occur throughout content review."
+        "recall_minutes": 20,
+        "notes": "Build the content foundation while immediately applying each chapter with Kaplan questions. The ramp schedule overrides these full-volume targets during the first several weeks."
       },
 
       {
@@ -212,7 +331,8 @@
         "start": "2026-11-01",
         "end": "2026-11-22",
         "primary_resource": "Kaplan Books",
-        "question_resource": "UWorld + Kaplan",
+        "secondary_resource": "UWorld",
+        "question_resource": "Kaplan + UWorld",
         "question_target_min": 25,
         "question_target_max": 40,
         "cars_passages_min": 2,
@@ -221,6 +341,7 @@
         "chapter_minutes": 105,
         "chapter_review_minutes": 35,
         "question_review_minutes": 90,
+        "recall_minutes": 20,
         "notes": "Continue sequential Kaplan chapters while increasing passage-based practice. UWorld becomes increasingly important."
       },
 
@@ -240,6 +361,7 @@
         "chapter_minutes": 75,
         "chapter_review_minutes": 30,
         "question_review_minutes": 120,
+        "recall_minutes": 20,
         "notes": "Finish remaining Kaplan chapters while UWorld becomes the primary learning tool. Content review becomes increasingly targeted."
       },
 
@@ -258,6 +380,7 @@
         "anki_minutes": 35,
         "targeted_repair_minutes": 35,
         "question_review_minutes": 150,
+        "recall_minutes": 20,
         "notes": "Move toward official AAMC reasoning. Kaplan reading should now be completed or used only for specific weaknesses."
       },
 
@@ -276,6 +399,7 @@
         "anki_minutes": 30,
         "targeted_repair_minutes": 30,
         "question_review_minutes": 165,
+        "recall_minutes": 15,
         "notes": "Official AAMC material is the priority. Use UWorld only when a weakness needs additional targeted practice."
       },
 
@@ -294,6 +418,7 @@
         "anki_minutes": 25,
         "targeted_repair_minutes": 30,
         "question_review_minutes": 90,
+        "recall_minutes": 15,
         "notes": "Reduce volume. Review weaknesses, official reasoning, equations, high-yield facts and timing. Protect sleep and exam readiness."
       },
 
@@ -303,6 +428,7 @@
         "start": "2027-01-21",
         "end": "2027-01-21",
         "primary_resource": "MCAT",
+        "secondary_resource": null,
         "question_resource": "MCAT",
         "question_target_min": 0,
         "question_target_max": 0,
@@ -311,6 +437,7 @@
         "anki_minutes": 0,
         "targeted_repair_minutes": 0,
         "question_review_minutes": 0,
+        "recall_minutes": 0,
         "notes": "MCAT DAY. Diya and Hamzah take the MCAT today. No scheduled study workload."
       }
     ],
@@ -324,65 +451,367 @@
       "Mixed"
     ],
 
+    "initial_weaknesses": [
+      {
+        "subject": "B/B",
+        "category": "Biochemistry",
+        "topic": "Amino Acids",
+        "subtopic": "Identification",
+        "source": "Kaplan Biochemistry Ch. 1 Concept Checks",
+        "note": "Concept Check questions #3 and #5 were missed. Both involved identifying amino acids.",
+        "mastery": "red"
+      }
+    ],
+
     "chapters": [
-      {"sequence":1,"subject":"Biochemistry","chapter":1,"title":"Amino Acids, Peptides & Proteins"},
-      {"sequence":2,"subject":"General Chemistry","chapter":1,"title":"Atomic Structure"},
-      {"sequence":3,"subject":"Biochemistry","chapter":2,"title":"Enzymes"},
-      {"sequence":4,"subject":"General Chemistry","chapter":2,"title":"The Periodic Table"},
-      {"sequence":5,"subject":"Biology","chapter":1,"title":"The Cell"},
-      {"sequence":6,"subject":"Physics/Math","chapter":10,"title":"Mathematics"},
-      {"sequence":7,"subject":"General Chemistry","chapter":3,"title":"Bonding & Chemical Interactions"},
-      {"sequence":8,"subject":"Organic Chemistry","chapter":2,"title":"Isomers"},
-      {"sequence":9,"subject":"Organic Chemistry","chapter":3,"title":"Bonding"},
-      {"sequence":10,"subject":"Biochemistry","chapter":3,"title":"Non-Enzymatic Protein Function & Protein Analysis"},
-      {"sequence":11,"subject":"Organic Chemistry","chapter":11,"title":"Spectroscopy"},
-      {"sequence":12,"subject":"Organic Chemistry","chapter":12,"title":"Separations & Purifications"},
-      {"sequence":13,"subject":"Biology","chapter":2,"title":"Reproduction"},
-      {"sequence":14,"subject":"Organic Chemistry","chapter":1,"title":"Nomenclature"},
-      {"sequence":15,"subject":"Biology","chapter":3,"title":"Embryology"},
-      {"sequence":16,"subject":"Physics/Math","chapter":1,"title":"Kinematics & Dynamics"},
-      {"sequence":17,"subject":"Biology","chapter":12,"title":"Genetics & Evolution"},
-      {"sequence":18,"subject":"Biochemistry","chapter":6,"title":"DNA & Biotechnology"},
-      {"sequence":19,"subject":"Biochemistry","chapter":7,"title":"RNA & the Genetic Code"},
-      {"sequence":20,"subject":"Physics/Math","chapter":2,"title":"Work & Energy"},
-      {"sequence":21,"subject":"Biochemistry","chapter":8,"title":"Biological Membranes"},
-      {"sequence":22,"subject":"General Chemistry","chapter":4,"title":"Compounds & Stoichiometry"},
-      {"sequence":23,"subject":"Organic Chemistry","chapter":4,"title":"Analyzing Organic Reactions"},
-      {"sequence":24,"subject":"Biology","chapter":4,"title":"The Nervous System"},
-      {"sequence":25,"subject":"Physics/Math","chapter":3,"title":"Thermodynamics"},
-      {"sequence":26,"subject":"Biology","chapter":5,"title":"The Endocrine System"},
-      {"sequence":27,"subject":"General Chemistry","chapter":5,"title":"Chemical Kinetics"},
-      {"sequence":28,"subject":"Biochemistry","chapter":4,"title":"Carbohydrate Structure & Function"},
-      {"sequence":29,"subject":"General Chemistry","chapter":6,"title":"Equilibrium"},
-      {"sequence":30,"subject":"Biochemistry","chapter":5,"title":"Lipid Structure & Function"},
-      {"sequence":31,"subject":"General Chemistry","chapter":7,"title":"Thermochemistry"},
-      {"sequence":32,"subject":"Biochemistry","chapter":9,"title":"Carbohydrate Metabolism I"},
-      {"sequence":33,"subject":"Biology","chapter":6,"title":"The Respiratory System"},
-      {"sequence":34,"subject":"Biochemistry","chapter":10,"title":"Carbohydrate Metabolism II"},
-      {"sequence":35,"subject":"Biology","chapter":7,"title":"The Cardiovascular System"},
-      {"sequence":36,"subject":"Organic Chemistry","chapter":5,"title":"Alcohols"},
-      {"sequence":37,"subject":"Biochemistry","chapter":11,"title":"Lipid & Amino Acid Metabolism"},
-      {"sequence":38,"subject":"Biology","chapter":8,"title":"The Immune System"},
-      {"sequence":39,"subject":"Organic Chemistry","chapter":6,"title":"Aldehydes & Ketones I"},
-      {"sequence":40,"subject":"Biochemistry","chapter":12,"title":"Bioenergetics & Regulation of Metabolism"},
-      {"sequence":41,"subject":"Biology","chapter":9,"title":"The Digestive System"},
-      {"sequence":42,"subject":"Biology","chapter":10,"title":"Homeostasis"},
-      {"sequence":43,"subject":"General Chemistry","chapter":8,"title":"The Gas Phase"},
-      {"sequence":44,"subject":"Biology","chapter":11,"title":"The Musculoskeletal System"},
-      {"sequence":45,"subject":"General Chemistry","chapter":9,"title":"Solutions"},
-      {"sequence":46,"subject":"General Chemistry","chapter":10,"title":"Acids & Bases"},
-      {"sequence":47,"subject":"Physics/Math","chapter":4,"title":"Fluids"},
-      {"sequence":48,"subject":"General Chemistry","chapter":11,"title":"Oxidation–Reduction Reactions"},
-      {"sequence":49,"subject":"General Chemistry","chapter":12,"title":"Electrochemistry"},
-      {"sequence":50,"subject":"Physics/Math","chapter":5,"title":"Electrostatics & Magnetism"},
-      {"sequence":51,"subject":"Physics/Math","chapter":9,"title":"Atomic & Nuclear Phenomena"},
-      {"sequence":52,"subject":"Physics/Math","chapter":8,"title":"Light & Optics"},
-      {"sequence":53,"subject":"Organic Chemistry","chapter":9,"title":"Carboxylic Acid Derivatives"},
-      {"sequence":54,"subject":"Organic Chemistry","chapter":10,"title":"Nitrogen- & Phosphorus-Containing Compounds"},
-      {"sequence":55,"subject":"Physics/Math","chapter":7,"title":"Waves & Sound"},
-      {"sequence":56,"subject":"Organic Chemistry","chapter":8,"title":"Carboxylic Acids"},
-      {"sequence":57,"subject":"Physics/Math","chapter":6,"title":"Circuits"},
-      {"sequence":58,"subject":"Organic Chemistry","chapter":7,"title":"Enolates"}
+      {
+        "sequence": 1,
+        "subject": "Biochemistry",
+        "chapter": 1,
+        "title": "Amino Acids, Peptides & Proteins"
+      },
+      {
+        "sequence": 2,
+        "subject": "General Chemistry",
+        "chapter": 1,
+        "title": "Atomic Structure"
+      },
+      {
+        "sequence": 3,
+        "subject": "Biochemistry",
+        "chapter": 2,
+        "title": "Enzymes"
+      },
+      {
+        "sequence": 4,
+        "subject": "General Chemistry",
+        "chapter": 2,
+        "title": "The Periodic Table"
+      },
+      {
+        "sequence": 5,
+        "subject": "Biology",
+        "chapter": 1,
+        "title": "The Cell"
+      },
+      {
+        "sequence": 6,
+        "subject": "Physics/Math",
+        "chapter": 10,
+        "title": "Mathematics"
+      },
+      {
+        "sequence": 7,
+        "subject": "General Chemistry",
+        "chapter": 3,
+        "title": "Bonding & Chemical Interactions"
+      },
+      {
+        "sequence": 8,
+        "subject": "Organic Chemistry",
+        "chapter": 2,
+        "title": "Isomers"
+      },
+      {
+        "sequence": 9,
+        "subject": "Organic Chemistry",
+        "chapter": 3,
+        "title": "Bonding"
+      },
+      {
+        "sequence": 10,
+        "subject": "Biochemistry",
+        "chapter": 3,
+        "title": "Non-Enzymatic Protein Function & Protein Analysis"
+      },
+      {
+        "sequence": 11,
+        "subject": "Organic Chemistry",
+        "chapter": 11,
+        "title": "Spectroscopy"
+      },
+      {
+        "sequence": 12,
+        "subject": "Organic Chemistry",
+        "chapter": 12,
+        "title": "Separations & Purifications"
+      },
+      {
+        "sequence": 13,
+        "subject": "Biology",
+        "chapter": 2,
+        "title": "Reproduction"
+      },
+      {
+        "sequence": 14,
+        "subject": "Organic Chemistry",
+        "chapter": 1,
+        "title": "Nomenclature"
+      },
+      {
+        "sequence": 15,
+        "subject": "Biology",
+        "chapter": 3,
+        "title": "Embryology"
+      },
+      {
+        "sequence": 16,
+        "subject": "Physics/Math",
+        "chapter": 1,
+        "title": "Kinematics & Dynamics"
+      },
+      {
+        "sequence": 17,
+        "subject": "Biology",
+        "chapter": 12,
+        "title": "Genetics & Evolution"
+      },
+      {
+        "sequence": 18,
+        "subject": "Biochemistry",
+        "chapter": 6,
+        "title": "DNA & Biotechnology"
+      },
+      {
+        "sequence": 19,
+        "subject": "Biochemistry",
+        "chapter": 7,
+        "title": "RNA & the Genetic Code"
+      },
+      {
+        "sequence": 20,
+        "subject": "Physics/Math",
+        "chapter": 2,
+        "title": "Work & Energy"
+      },
+      {
+        "sequence": 21,
+        "subject": "Biochemistry",
+        "chapter": 8,
+        "title": "Biological Membranes"
+      },
+      {
+        "sequence": 22,
+        "subject": "General Chemistry",
+        "chapter": 4,
+        "title": "Compounds & Stoichiometry"
+      },
+      {
+        "sequence": 23,
+        "subject": "Organic Chemistry",
+        "chapter": 4,
+        "title": "Analyzing Organic Reactions"
+      },
+      {
+        "sequence": 24,
+        "subject": "Biology",
+        "chapter": 4,
+        "title": "The Nervous System"
+      },
+      {
+        "sequence": 25,
+        "subject": "Physics/Math",
+        "chapter": 3,
+        "title": "Thermodynamics"
+      },
+      {
+        "sequence": 26,
+        "subject": "Biology",
+        "chapter": 5,
+        "title": "The Endocrine System"
+      },
+      {
+        "sequence": 27,
+        "subject": "General Chemistry",
+        "chapter": 5,
+        "title": "Chemical Kinetics"
+      },
+      {
+        "sequence": 28,
+        "subject": "Biochemistry",
+        "chapter": 4,
+        "title": "Carbohydrate Structure & Function"
+      },
+      {
+        "sequence": 29,
+        "subject": "General Chemistry",
+        "chapter": 6,
+        "title": "Equilibrium"
+      },
+      {
+        "sequence": 30,
+        "subject": "Biochemistry",
+        "chapter": 5,
+        "title": "Lipid Structure & Function"
+      },
+      {
+        "sequence": 31,
+        "subject": "General Chemistry",
+        "chapter": 7,
+        "title": "Thermochemistry"
+      },
+      {
+        "sequence": 32,
+        "subject": "Biochemistry",
+        "chapter": 9,
+        "title": "Carbohydrate Metabolism I"
+      },
+      {
+        "sequence": 33,
+        "subject": "Biology",
+        "chapter": 6,
+        "title": "The Respiratory System"
+      },
+      {
+        "sequence": 34,
+        "subject": "Biochemistry",
+        "chapter": 10,
+        "title": "Carbohydrate Metabolism II"
+      },
+      {
+        "sequence": 35,
+        "subject": "Biology",
+        "chapter": 7,
+        "title": "The Cardiovascular System"
+      },
+      {
+        "sequence": 36,
+        "subject": "Organic Chemistry",
+        "chapter": 5,
+        "title": "Alcohols"
+      },
+      {
+        "sequence": 37,
+        "subject": "Biochemistry",
+        "chapter": 11,
+        "title": "Lipid & Amino Acid Metabolism"
+      },
+      {
+        "sequence": 38,
+        "subject": "Biology",
+        "chapter": 8,
+        "title": "The Immune System"
+      },
+      {
+        "sequence": 39,
+        "subject": "Organic Chemistry",
+        "chapter": 6,
+        "title": "Aldehydes & Ketones I"
+      },
+      {
+        "sequence": 40,
+        "subject": "Biochemistry",
+        "chapter": 12,
+        "title": "Bioenergetics & Regulation of Metabolism"
+      },
+      {
+        "sequence": 41,
+        "subject": "Biology",
+        "chapter": 9,
+        "title": "The Digestive System"
+      },
+      {
+        "sequence": 42,
+        "subject": "Biology",
+        "chapter": 10,
+        "title": "Homeostasis"
+      },
+      {
+        "sequence": 43,
+        "subject": "General Chemistry",
+        "chapter": 8,
+        "title": "The Gas Phase"
+      },
+      {
+        "sequence": 44,
+        "subject": "Biology",
+        "chapter": 11,
+        "title": "The Musculoskeletal System"
+      },
+      {
+        "sequence": 45,
+        "subject": "General Chemistry",
+        "chapter": 9,
+        "title": "Solutions"
+      },
+      {
+        "sequence": 46,
+        "subject": "General Chemistry",
+        "chapter": 10,
+        "title": "Acids & Bases"
+      },
+      {
+        "sequence": 47,
+        "subject": "Physics/Math",
+        "chapter": 4,
+        "title": "Fluids"
+      },
+      {
+        "sequence": 48,
+        "subject": "General Chemistry",
+        "chapter": 11,
+        "title": "Oxidation–Reduction Reactions"
+      },
+      {
+        "sequence": 49,
+        "subject": "General Chemistry",
+        "chapter": 12,
+        "title": "Electrochemistry"
+      },
+      {
+        "sequence": 50,
+        "subject": "Physics/Math",
+        "chapter": 5,
+        "title": "Electrostatics & Magnetism"
+      },
+      {
+        "sequence": 51,
+        "subject": "Physics/Math",
+        "chapter": 9,
+        "title": "Atomic & Nuclear Phenomena"
+      },
+      {
+        "sequence": 52,
+        "subject": "Physics/Math",
+        "chapter": 8,
+        "title": "Light & Optics"
+      },
+      {
+        "sequence": 53,
+        "subject": "Organic Chemistry",
+        "chapter": 9,
+        "title": "Carboxylic Acid Derivatives"
+      },
+      {
+        "sequence": 54,
+        "subject": "Organic Chemistry",
+        "chapter": 10,
+        "title": "Nitrogen- & Phosphorus-Containing Compounds"
+      },
+      {
+        "sequence": 55,
+        "subject": "Physics/Math",
+        "chapter": 7,
+        "title": "Waves & Sound"
+      },
+      {
+        "sequence": 56,
+        "subject": "Organic Chemistry",
+        "chapter": 8,
+        "title": "Carboxylic Acids"
+      },
+      {
+        "sequence": 57,
+        "subject": "Physics/Math",
+        "chapter": 6,
+        "title": "Circuits"
+      },
+      {
+        "sequence": 58,
+        "subject": "Organic Chemistry",
+        "chapter": 7,
+        "title": "Enolates"
+      }
     ]
   },
 
@@ -435,8 +864,11 @@
     },
 
     "rules": [
+      "Diya and Hamzah maintain separate task checklists under the same login.",
       "Incomplete tasks remain attached to their original scheduled date.",
-      "Incomplete tasks appear on the next study day as overflow.",
+      "Incomplete tasks appear on the next study day as overflow for the same student.",
+      "Diya overflow does not become Hamzah overflow.",
+      "Hamzah overflow does not become Diya overflow.",
       "Original missed days remain visibly flagged.",
       "Priority 1 overflow is completed before new lower-priority work.",
       "Overflow does not erase completion history.",
