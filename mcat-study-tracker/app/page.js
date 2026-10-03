@@ -10,24 +10,31 @@ const EXAM_DATE = schedule.exam_date || '2027-01-21'
 const SOURCE_TYPE = 'v2_engine'
 const DAYS = Array.isArray(schedule.days) ? schedule.days : []
 
-function localISO(d = new Date()) {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+/* =========================================================
+   DATE / FORMAT HELPERS
+========================================================= */
+
+function localISO(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
 }
 
-function fromISO(s) {
-  const [y, m, d] = s.split('-').map(Number)
-  return new Date(y, m - 1, d)
+function fromISO(iso) {
+  const [year, month, day] = iso.split('-').map(Number)
+  return new Date(year, month - 1, day)
 }
 
-function daysBetween(a, b) {
-  return Math.round((fromISO(b) - fromISO(a)) / 86400000)
+function daysBetween(start, end) {
+  return Math.round(
+    (fromISO(end) - fromISO(start)) / 86400000
+  )
 }
 
-function formatDate(s, weekday = false, year = false) {
-  return fromISO(s).toLocaleDateString('en-US', {
+function formatDate(iso, weekday = false, year = false) {
+  return fromISO(iso).toLocaleDateString('en-US', {
     weekday: weekday ? 'short' : undefined,
     month: 'short',
     day: 'numeric',
@@ -35,34 +42,159 @@ function formatDate(s, weekday = false, year = false) {
   })
 }
 
-function fmtMin(n = 0) {
-  n = Math.max(0, Math.round(Number(n) || 0))
+function formatMinutes(value = 0) {
+  const minutes = Math.max(
+    0,
+    Math.round(Number(value) || 0)
+  )
 
-  const h = Math.floor(n / 60)
-  const m = n % 60
+  const hours = Math.floor(minutes / 60)
+  const remainder = minutes % 60
 
-  if (h) {
-    return `${h}h${m ? ` ${m}m` : ''}`
+  if (!hours) {
+    return `${remainder}m`
   }
 
-  return `${m}m`
+  return `${hours}h${remainder ? ` ${remainder}m` : ''}`
 }
 
-function dayFor(iso) {
-  return DAYS.find((d) => d.date === iso) || null
+function weekDates(iso) {
+  const date = fromISO(iso)
+  const dayOfWeek = date.getDay()
+
+  const mondayOffset =
+    dayOfWeek === 0 ? -6 : 1 - dayOfWeek
+
+  const monday = new Date(date)
+
+  monday.setDate(
+    date.getDate() + mondayOffset
+  )
+
+  return Array.from(
+    { length: 7 },
+    (_, index) => {
+      const next = new Date(monday)
+
+      next.setDate(
+        monday.getDate() + index
+      )
+
+      return localISO(next)
+    }
+  )
 }
 
-function planFor(iso, student) {
-  const day = dayFor(iso)
+/* =========================================================
+   SCHEDULE HELPERS
+========================================================= */
 
-  if (!day) return null
+function getScheduleDay(iso) {
+  return (
+    DAYS.find(
+      (day) => day.date === iso
+    ) || null
+  )
+}
+
+function getStudentPlan(iso, student) {
+  const day = getScheduleDay(iso)
+
+  if (!day) {
+    return null
+  }
 
   if (student === 'Diya') {
     return day.diya || null
   }
 
-  return day.hamzah || null
+  if (student === 'Hamzah') {
+    return day.hamzah || null
+  }
+
+  return null
 }
+
+/* =========================================================
+   HAMZAH CHAPTER HELPERS
+========================================================= */
+
+function getHamzahChapters() {
+  const candidates = [
+    config.hamzah?.chapters,
+    config.students?.hamzah?.chapters,
+    config.friend?.chapters,
+    config.students?.friend?.chapters,
+    config.chapters,
+  ]
+
+  return (
+    candidates.find(
+      (value) => Array.isArray(value)
+    ) || []
+  )
+}
+
+function getChapterSequence(task) {
+  const match =
+    (task.description || '').match(
+      /chapter_sequence:(\d+)/
+    )
+
+  return match
+    ? Number(match[1])
+    : null
+}
+
+function getCompletedChapterSequences(tasks) {
+  const completed = new Set()
+
+  tasks.forEach((task) => {
+    if (
+      task.student_name === 'Hamzah' &&
+      task.task_type === 'Chapter' &&
+      task.completed
+    ) {
+      const sequence =
+        getChapterSequence(task)
+
+      if (sequence) {
+        completed.add(sequence)
+      }
+    }
+  })
+
+  return completed
+}
+
+function getCurrentChapter(tasks) {
+  const chapters =
+    getHamzahChapters()
+
+  const completed =
+    getCompletedChapterSequences(tasks)
+
+  return (
+    chapters.find(
+      (chapter) =>
+        !completed.has(
+          Number(chapter.sequence)
+        )
+    ) || null
+  )
+}
+
+function chapterLabel(chapter) {
+  if (!chapter) {
+    return 'Current Kaplan Chapter'
+  }
+
+  return `${chapter.subject} Ch. ${chapter.chapter}: ${chapter.title}`
+}
+
+/* =========================================================
+   TASK HELPERS
+========================================================= */
 
 function taskSignature(task) {
   return [
@@ -76,306 +208,414 @@ function taskSignature(task) {
 
 function sumMinutes(tasks = []) {
   return tasks.reduce(
-    (total, task) => total + (Number(task.estimated_minutes) || 0),
+    (total, task) =>
+      total +
+      (Number(
+        task.estimated_minutes
+      ) || 0),
     0
   )
 }
 
 function progressPercent(tasks = []) {
-  const realTasks = tasks.filter((task) => task.task_type !== 'Chapter')
+  const realTasks =
+    tasks.filter(
+      (task) =>
+        task.task_type !== 'Chapter'
+    )
 
-  if (!realTasks.length) return 0
+  if (!realTasks.length) {
+    return 0
+  }
 
-  const completed = realTasks.filter((task) => task.completed).length
+  const completed =
+    realTasks.filter(
+      (task) => task.completed
+    ).length
 
-  return Math.round((completed / realTasks.length) * 100)
-}
-
-function weekDates(iso) {
-  const date = fromISO(iso)
-  const dayOfWeek = date.getDay()
-
-  const offset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
-
-  const monday = new Date(date)
-  monday.setDate(date.getDate() + offset)
-
-  return Array.from({ length: 7 }, (_, i) => {
-    const next = new Date(monday)
-    next.setDate(monday.getDate() + i)
-    return localISO(next)
-  })
-}
-
-/*
-  Supports several possible config locations.
-
-  This prevents Hamzah's chapter system from breaking if your
-  studyConfig.json uses hamzah, students.hamzah, or friend.
-*/
-function getHamzahChapters() {
-  const possible = [
-    config.hamzah?.chapters,
-    config.students?.hamzah?.chapters,
-    config.friend?.chapters,
-    config.students?.friend?.chapters,
-    config.chapters,
-  ]
-
-  return possible.find(Array.isArray) || []
-}
-
-function chapterSequenceFromTask(task) {
-  const match = (task.description || '').match(/chapter_sequence:(\d+)/)
-
-  return match ? Number(match[1]) : null
-}
-
-function completedChapterSet(tasks) {
-  const completed = new Set()
-
-  tasks.forEach((task) => {
-    if (
-      task.student_name === 'Hamzah' &&
-      task.task_type === 'Chapter' &&
-      task.completed
-    ) {
-      const sequence = chapterSequenceFromTask(task)
-
-      if (sequence) {
-        completed.add(sequence)
-      }
-    }
-  })
-
-  return completed
-}
-
-function getCurrentChapter(tasks) {
-  const chapters = getHamzahChapters()
-  const completed = completedChapterSet(tasks)
-
-  return (
-    chapters.find(
-      (chapter) => !completed.has(Number(chapter.sequence))
-    ) || null
+  return Math.round(
+    (completed / realTasks.length) *
+      100
   )
 }
 
-function chapterLabel(chapter) {
-  if (!chapter) return 'Current Kaplan Chapter'
+/* =========================================================
+   GENERATE TASKS FROM SCHEDULE.JSON
 
-  return `${chapter.subject} Ch. ${chapter.chapter}: ${chapter.title}`
-}
+   schedule.json determines WHAT should appear.
 
-/*
-  THIS IS THE IMPORTANT PART.
+   Supabase only supplies persistence/completion state.
+========================================================= */
 
-  We create the visible checklist DIRECTLY from schedule.json.
+function generateExpectedTasks(
+  iso,
+  student,
+  currentChapter
+) {
+  const plan =
+    getStudentPlan(iso, student)
 
-  That means Hamzah's tasks do not depend on Supabase successfully
-  inserting them first.
-*/
-function expectedTasks(iso, student, currentChapter) {
-  const plan = planFor(iso, student)
-
-  if (!plan || !Array.isArray(plan.tasks)) {
+  if (
+    !plan ||
+    !Array.isArray(plan.tasks)
+  ) {
     return []
   }
 
-  const output = plan.tasks.map((item, index) => {
-    let title = item.title || 'Study Task'
-    let subject = item.subject || ''
-    let description = item.details || ''
+  const expected =
+    plan.tasks.map(
+      (item, index) => {
+        let title =
+          item.title ||
+          'Study Task'
 
-    const isHamzahChapterTask =
-      student === 'Hamzah' &&
-      plan.chapter_mode === 'current_unfinished' &&
-      (
-        title === 'Continue Current Kaplan Chapter' ||
-        subject === 'Current Chapter'
-      )
+        let subject =
+          item.subject || ''
 
-    if (isHamzahChapterTask && currentChapter) {
-      if (title === 'Continue Current Kaplan Chapter') {
-        title = `Kaplan: ${chapterLabel(currentChapter)}`
+        let description =
+          item.details || ''
+
+        const usesCurrentChapter =
+          student === 'Hamzah' &&
+          plan.chapter_mode ===
+            'current_unfinished' &&
+          (
+            title ===
+              'Continue Current Kaplan Chapter' ||
+            subject ===
+              'Current Chapter'
+          )
+
+        if (
+          usesCurrentChapter &&
+          currentChapter
+        ) {
+          if (
+            title ===
+            'Continue Current Kaplan Chapter'
+          ) {
+            title =
+              `Kaplan: ${chapterLabel(
+                currentChapter
+              )}`
+          }
+
+          if (
+            subject ===
+            'Current Chapter'
+          ) {
+            subject =
+              currentChapter.subject ||
+              'Kaplan'
+          }
+
+          description = [
+            description,
+            `Current chapter: ${chapterLabel(
+              currentChapter
+            )}`,
+          ]
+            .filter(Boolean)
+            .join(' ')
+        }
+
+        return {
+          _virtual: true,
+
+          _key:
+            `${iso}-${student}-${index}`,
+
+          student_name:
+            student,
+
+          task_date:
+            iso,
+
+          current_due_date:
+            iso,
+
+          task_type:
+            item.type ||
+            'Study',
+
+          title,
+
+          description,
+
+          resource:
+            item.resource || '',
+
+          subject,
+
+          estimated_minutes:
+            Math.max(
+              0,
+              Math.round(
+                Number(
+                  item.minutes
+                ) || 0
+              )
+            ),
+
+          priority:
+            Number(
+              item.priority
+            ) || 2,
+
+          sort_order:
+            index + 1,
+
+          completed:
+            false,
+
+          completed_at:
+            null,
+
+          source_type:
+            SOURCE_TYPE,
+
+          status:
+            'scheduled',
+
+          carried_forward:
+            false,
+
+          carry_count:
+            0,
+        }
       }
+    )
 
-      if (subject === 'Current Chapter') {
-        subject = currentChapter.subject || 'Kaplan'
-      }
+  /* -----------------------------------------
+     Hamzah chapter completion checkbox
+  ----------------------------------------- */
 
-      description = [
-        description,
-        `Current chapter: ${chapterLabel(currentChapter)}`,
-      ]
-        .filter(Boolean)
-        .join(' ')
-    }
-
-    return {
-      _virtual: true,
-      _key: `${iso}-${student}-${index}`,
-
-      student_name: student,
-
-      task_date: iso,
-      current_due_date: iso,
-
-      task_type: item.type || 'Study',
-
-      title,
-      description,
-
-      resource: item.resource || '',
-      subject,
-
-      estimated_minutes: Math.max(
-        0,
-        Math.round(Number(item.minutes) || 0)
-      ),
-
-      priority: Number(item.priority) || 2,
-      sort_order: index + 1,
-
-      completed: false,
-
-      source_type: SOURCE_TYPE,
-      status: 'scheduled',
-
-      carried_forward: false,
-      carry_count: 0,
-    }
-  })
-
-  /*
-    Add a special zero-minute chapter completion task.
-
-    This is what lets Hamzah manually advance through the 58 Kaplan
-    chapters based on completion rather than date.
-  */
   const hasChapterWork =
     student === 'Hamzah' &&
     currentChapter &&
-    plan.chapter_mode === 'current_unfinished' &&
+    plan.chapter_mode ===
+      'current_unfinished' &&
     plan.tasks.some(
       (item) =>
-        item.title === 'Continue Current Kaplan Chapter' ||
-        item.subject === 'Current Chapter'
+        item.title ===
+          'Continue Current Kaplan Chapter' ||
+        item.subject ===
+          'Current Chapter'
     )
 
   if (hasChapterWork) {
-    output.push({
-      _virtual: true,
-      _key: `${iso}-Hamzah-chapter-${currentChapter.sequence}`,
+    expected.push({
+      _virtual:
+        true,
 
-      student_name: 'Hamzah',
+      _key:
+        `${iso}-Hamzah-chapter-${currentChapter.sequence}`,
 
-      task_date: iso,
-      current_due_date: iso,
+      student_name:
+        'Hamzah',
 
-      task_type: 'Chapter',
+      task_date:
+        iso,
 
-      title: `Mark chapter complete: ${chapterLabel(currentChapter)}`,
+      current_due_date:
+        iso,
+
+      task_type:
+        'Chapter',
+
+      title:
+        `Mark chapter complete: ${chapterLabel(
+          currentChapter
+        )}`,
 
       description:
         `chapter_sequence:${currentChapter.sequence} | ` +
-        `Only check this after the entire Kaplan chapter, ` +
-        `concept checks, and chapter questions are complete.`,
+        `Only complete this after finishing the full chapter, ` +
+        `concept checks, chapter questions, and assigned chapter work.`,
 
-      resource: 'Kaplan Books',
-      subject: currentChapter.subject || 'Kaplan',
+      resource:
+        'Kaplan Books',
 
-      estimated_minutes: 0,
+      subject:
+        currentChapter.subject ||
+        'Kaplan',
 
-      priority: 3,
-      sort_order: output.length + 1,
+      estimated_minutes:
+        0,
 
-      completed: false,
+      priority:
+        3,
 
-      source_type: SOURCE_TYPE,
-      status: 'scheduled',
+      sort_order:
+        expected.length + 1,
 
-      carried_forward: false,
-      carry_count: 0,
+      completed:
+        false,
+
+      completed_at:
+        null,
+
+      source_type:
+        SOURCE_TYPE,
+
+      status:
+        'scheduled',
+
+      carried_forward:
+        false,
+
+      carry_count:
+        0,
     })
   }
 
-  return output
+  return expected
 }
 
-/*
-  Database rows override schedule-generated rows.
+/* =========================================================
+   MERGE DATABASE STATE
 
-  BUT if the database row does not exist, the schedule-generated
-  task stays visible.
+   IMPORTANT:
 
-  This is what prevents 0/0.
-*/
-function mergeExpectedWithDatabase(expected, databaseRows) {
-  const databaseMap = new Map(
-    databaseRows.map((task) => [
-      taskSignature(task),
-      task,
-    ])
-  )
+   We DO NOT append random old database tasks.
 
-  const merged = expected.map((expectedTask) => {
-    const databaseTask = databaseMap.get(
-      taskSignature(expectedTask)
-    )
+   Only tasks that exist in schedule.json appear in today's
+   normal checklist.
 
-    return databaseTask || expectedTask
-  })
+   This removes the duplicate Anki, CARS, review, repair,
+   and old question blocks you were seeing.
+========================================================= */
 
-  const expectedSignatures = new Set(
-    expected.map(taskSignature)
-  )
+function mergeScheduleWithDatabase(
+  expected,
+  databaseRows
+) {
+  const databaseMap =
+    new Map()
 
-  databaseRows.forEach((task) => {
-    if (!expectedSignatures.has(taskSignature(task))) {
-      merged.push(task)
+  databaseRows.forEach(
+    (task) => {
+      databaseMap.set(
+        taskSignature(task),
+        task
+      )
     }
-  })
-
-  return merged.sort(
-    (a, b) =>
-      (Number(a.sort_order) || 0) -
-      (Number(b.sort_order) || 0)
   )
+
+  return expected
+    .map(
+      (expectedTask) => {
+        const saved =
+          databaseMap.get(
+            taskSignature(
+              expectedTask
+            )
+          )
+
+        return (
+          saved ||
+          expectedTask
+        )
+      }
+    )
+    .sort(
+      (a, b) =>
+        (Number(
+          a.sort_order
+        ) || 0) -
+        (Number(
+          b.sort_order
+        ) || 0)
+    )
 }
+
+/* =========================================================
+   APP
+========================================================= */
 
 export default function Home() {
-  const [session, setSession] = useState(null)
-  const [authLoading, setAuthLoading] = useState(true)
+  const [
+    session,
+    setSession,
+  ] = useState(null)
 
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [authMode, setAuthMode] = useState('signin')
+  const [
+    authLoading,
+    setAuthLoading,
+  ] = useState(true)
 
-  const [message, setMessage] = useState('')
+  const [
+    email,
+    setEmail,
+  ] = useState('')
 
-  const [view, setView] = useState('Today')
+  const [
+    password,
+    setPassword,
+  ] = useState('')
 
-  const [selectedDate, setSelectedDate] = useState(
+  const [
+    authMode,
+    setAuthMode,
+  ] = useState('signin')
+
+  const [
+    message,
+    setMessage,
+  ] = useState('')
+
+  const [
+    view,
+    setView,
+  ] = useState('Today')
+
+  const [
+    selectedDate,
+    setSelectedDate,
+  ] = useState(
     localISO()
   )
 
-  const [tasks, setTasks] = useState([])
-  const [questionLogs, setQuestionLogs] = useState([])
-  const [fullLengths, setFullLengths] = useState([])
-  const [studySessions, setStudySessions] = useState([])
+  const [
+    tasks,
+    setTasks,
+  ] = useState([])
 
-  const [loaded, setLoaded] = useState(false)
-  const [syncing, setSyncing] = useState(false)
+  const [
+    questionLogs,
+    setQuestionLogs,
+  ] = useState([])
 
-  const syncRef = useRef(false)
+  const [
+    fullLengths,
+    setFullLengths,
+  ] = useState([])
 
-  const uid = session?.user?.id || null
+  const [
+    studySessions,
+    setStudySessions,
+  ] = useState([])
 
-  /*
-    AUTH
-  */
+  const [
+    loaded,
+    setLoaded,
+  ] = useState(false)
+
+  const [
+    syncing,
+    setSyncing,
+  ] = useState(false)
+
+  const syncRef =
+    useRef(false)
+
+  const uid =
+    session?.user?.id ||
+    null
+
+  /* =======================================================
+     AUTH
+  ======================================================= */
 
   useEffect(() => {
     if (!supabase) {
@@ -383,107 +623,197 @@ export default function Home() {
       return
     }
 
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session || null)
-      setAuthLoading(false)
-    })
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        setSession(
+          data.session || null
+        )
+
+        setAuthLoading(false)
+      })
 
     const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession || null)
-    })
+      data: {
+        subscription,
+      },
+    } =
+      supabase.auth
+        .onAuthStateChange(
+          (
+            _event,
+            nextSession
+          ) => {
+            setSession(
+              nextSession ||
+              null
+            )
+          }
+        )
 
-    return () => subscription.unsubscribe()
+    return () =>
+      subscription.unsubscribe()
   }, [])
 
-  async function handleAuth(event) {
+  async function handleAuth(
+    event
+  ) {
     event.preventDefault()
 
     setMessage('')
 
     const result =
       authMode === 'signup'
-        ? await supabase.auth.signUp({
-            email,
-            password,
-          })
-        : await supabase.auth.signInWithPassword({
-            email,
-            password,
-          })
+        ? await supabase.auth.signUp(
+            {
+              email,
+              password,
+            }
+          )
+        : await supabase.auth.signInWithPassword(
+            {
+              email,
+              password,
+            }
+          )
 
     if (result.error) {
-      setMessage(result.error.message)
-    } else if (authMode === 'signup') {
+      setMessage(
+        result.error.message
+      )
+
+      return
+    }
+
+    if (
+      authMode === 'signup'
+    ) {
       setMessage(
         'Account created. Check your email if confirmation is required.'
       )
     }
   }
 
-  /*
-    DATABASE LOAD
-  */
+  /* =======================================================
+     LOAD DATABASE
+  ======================================================= */
 
   async function loadAll() {
-    if (!uid || !supabase) return []
+    if (
+      !uid ||
+      !supabase
+    ) {
+      return []
+    }
 
     const [
       taskResult,
       questionResult,
       fullLengthResult,
       sessionResult,
-    ] = await Promise.all([
-      supabase
-        .from('daily_tasks')
-        .select('*')
-        .eq('user_id', uid)
-        .order('task_date')
-        .order('sort_order'),
+    ] =
+      await Promise.all([
+        supabase
+          .from(
+            'daily_tasks'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'task_date'
+          )
+          .order(
+            'sort_order'
+          ),
 
-      supabase
-        .from('question_blocks')
-        .select('*')
-        .eq('user_id', uid)
-        .order('question_date', {
-          ascending: false,
-        }),
+        supabase
+          .from(
+            'question_blocks'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'question_date',
+            {
+              ascending:
+                false,
+            }
+          ),
 
-      supabase
-        .from('full_length_scores')
-        .select('*')
-        .eq('user_id', uid)
-        .order('exam_date', {
-          ascending: false,
-        }),
+        supabase
+          .from(
+            'full_length_scores'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'exam_date',
+            {
+              ascending:
+                false,
+            }
+          ),
 
-      supabase
-        .from('study_sessions')
-        .select('*')
-        .eq('user_id', uid)
-        .order('session_date', {
-          ascending: false,
-        }),
-    ])
+        supabase
+          .from(
+            'study_sessions'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .order(
+            'session_date',
+            {
+              ascending:
+                false,
+            }
+          ),
+      ])
 
-    if (taskResult.error) {
-      console.error(taskResult.error)
+    if (
+      taskResult.error
+    ) {
+      console.error(
+        taskResult.error
+      )
 
       setMessage(
         `Task load error: ${taskResult.error.message}`
       )
     }
 
-    const taskRows = taskResult.data || []
+    const taskRows =
+      taskResult.data || []
 
-    setTasks(taskRows)
+    setTasks(
+      taskRows
+    )
 
-    setQuestionLogs(questionResult.data || [])
+    setQuestionLogs(
+      questionResult.data ||
+        []
+    )
 
-    setFullLengths(fullLengthResult.data || [])
+    setFullLengths(
+      fullLengthResult.data ||
+        []
+    )
 
-    setStudySessions(sessionResult.data || [])
+    setStudySessions(
+      sessionResult.data ||
+        []
+    )
 
     setLoaded(true)
 
@@ -497,34 +827,42 @@ export default function Home() {
     }
   }, [uid])
 
-  /*
-    HAMZAH CHAPTER PROGRESS
-  */
+  /* =======================================================
+     CHAPTER STATE
+  ======================================================= */
 
-  const currentChapter = useMemo(
-    () => getCurrentChapter(tasks),
-    [tasks]
-  )
+  const currentChapter =
+    useMemo(
+      () =>
+        getCurrentChapter(
+          tasks
+        ),
+      [tasks]
+    )
 
-  const chapterProgress = useMemo(() => {
-    const chapters = getHamzahChapters()
+  const chapterProgress =
+    useMemo(() => {
+      const chapters =
+        getHamzahChapters()
 
-    return {
-      completed: completedChapterSet(tasks).size,
-      total: chapters.length,
-    }
-  }, [tasks])
+      return {
+        completed:
+          getCompletedChapterSequences(
+            tasks
+          ).size,
 
-  /*
-    SYNC ONE DAY TO DATABASE
+        total:
+          chapters.length,
+      }
+    }, [tasks])
 
-    BOTH STUDENTS are generated independently.
+  /* =======================================================
+     SYNC SCHEDULE → SUPABASE
+  ======================================================= */
 
-    If Supabase rejects an insert, the checklist STILL displays
-    because the visible checklist is generated from schedule.json.
-  */
-
-  async function syncDay(iso) {
+  async function syncDay(
+    iso
+  ) {
     if (
       !uid ||
       !supabase ||
@@ -535,7 +873,8 @@ export default function Home() {
       return
     }
 
-    const scheduleDay = dayFor(iso)
+    const scheduleDay =
+      getScheduleDay(iso)
 
     if (!scheduleDay) {
       setMessage(
@@ -545,79 +884,123 @@ export default function Home() {
       return
     }
 
-    syncRef.current = true
+    syncRef.current =
+      true
+
     setSyncing(true)
 
     try {
       const {
-        data: existing,
-        error: existingError,
-      } = await supabase
-        .from('daily_tasks')
-        .select('*')
-        .eq('user_id', uid)
-        .eq('source_type', SOURCE_TYPE)
-        .eq('task_date', iso)
+        data:
+          existingRows,
+        error:
+          existingError,
+      } =
+        await supabase
+          .from(
+            'daily_tasks'
+          )
+          .select('*')
+          .eq(
+            'user_id',
+            uid
+          )
+          .eq(
+            'source_type',
+            SOURCE_TYPE
+          )
+          .eq(
+            'task_date',
+            iso
+          )
 
-      if (existingError) {
+      if (
+        existingError
+      ) {
         throw existingError
       }
 
-      const diyaExpected = expectedTasks(
-        iso,
-        'Diya',
-        currentChapter
-      )
+      const diyaExpected =
+        generateExpectedTasks(
+          iso,
+          'Diya',
+          currentChapter
+        )
 
-      const hamzahExpected = expectedTasks(
-        iso,
-        'Hamzah',
-        currentChapter
-      )
+      const hamzahExpected =
+        generateExpectedTasks(
+          iso,
+          'Hamzah',
+          currentChapter
+        )
 
       const expected = [
         ...diyaExpected,
         ...hamzahExpected,
       ]
 
-      const existingSignatures = new Set(
-        (existing || []).map(taskSignature)
-      )
-
-      const missing = expected
-        .filter(
-          (task) =>
-            !existingSignatures.has(
-              taskSignature(task)
-            )
+      const existingSignatures =
+        new Set(
+          (
+            existingRows ||
+            []
+          ).map(
+            taskSignature
+          )
         )
-        .map((task) => {
-          const {
-            _virtual,
-            _key,
-            ...databaseTask
-          } = task
 
-          return {
-            ...databaseTask,
-            user_id: uid,
-          }
-        })
+      const missing =
+        expected
+          .filter(
+            (task) =>
+              !existingSignatures.has(
+                taskSignature(
+                  task
+                )
+              )
+          )
+          .map(
+            (task) => {
+              const {
+                _virtual,
+                _key,
+                ...databaseTask
+              } = task
+
+              return {
+                ...databaseTask,
+
+                user_id:
+                  uid,
+              }
+            }
+          )
 
       console.log(
         `[MCAT ${iso}] ` +
-          `Diya=${diyaExpected.length}, ` +
-          `Hamzah=${hamzahExpected.length}, ` +
-          `missing=${missing.length}`
+          `Diya=${diyaExpected.length} ` +
+          `Hamzah=${hamzahExpected.length} ` +
+          `Missing=${missing.length}`
       )
 
-      if (missing.length) {
-        const { error: insertError } =
+      if (
+        missing.length
+      ) {
+        const {
+          error:
+            insertError,
+        } =
           await supabase
-            .from('daily_tasks')
-            .insert(missing)
+            .from(
+              'daily_tasks'
+            )
+            .insert(
+              missing
+            )
 
-        if (insertError) {
+        if (
+          insertError
+        ) {
           throw insertError
         }
       }
@@ -625,24 +1008,32 @@ export default function Home() {
       await loadAll()
     } catch (error) {
       console.error(
-        '[MCAT sync]',
+        '[MCAT SYNC]',
         error
       )
 
       setMessage(
         `Database sync warning: ${
-          error?.message || 'Unknown error'
-        }. Schedule tasks are still shown.`
+          error?.message ||
+          'Unknown error'
+        }. The schedule can still display normally.`
       )
     } finally {
-      syncRef.current = false
+      syncRef.current =
+        false
+
       setSyncing(false)
     }
   }
 
   useEffect(() => {
-    if (uid && loaded) {
-      syncDay(selectedDate)
+    if (
+      uid &&
+      loaded
+    ) {
+      syncDay(
+        selectedDate
+      )
     }
   }, [
     uid,
@@ -650,95 +1041,101 @@ export default function Home() {
     selectedDate,
   ])
 
-  /*
-    GET DATABASE TASKS FOR ONE STUDENT / DATE
-  */
+  /* =======================================================
+     DISPLAY TASKS
+  ======================================================= */
 
-  function databaseTasksFor(
+  function getDatabaseTasks(
     student,
     iso
   ) {
     return tasks.filter(
       (task) =>
-        task.source_type === SOURCE_TYPE &&
-        task.student_name === student &&
-        task.task_date === iso
+        task.source_type ===
+          SOURCE_TYPE &&
+        task.student_name ===
+          student &&
+        task.task_date ===
+          iso
     )
   }
 
-  /*
-    FINAL DISPLAY TASKS
-
-    schedule.json
-         +
-    Supabase state
-         =
-    what the user sees
-  */
-
-  function displayTasksFor(
+  function getDisplayTasks(
     student,
     iso
   ) {
-    const expected = expectedTasks(
-      iso,
-      student,
-      currentChapter
-    )
+    const expected =
+      generateExpectedTasks(
+        iso,
+        student,
+        currentChapter
+      )
 
-    const databaseRows =
-      databaseTasksFor(
+    const saved =
+      getDatabaseTasks(
         student,
         iso
       )
 
-    return mergeExpectedWithDatabase(
+    return mergeScheduleWithDatabase(
       expected,
-      databaseRows
+      saved
     )
   }
 
   const diyaTasks =
-    displayTasksFor(
+    getDisplayTasks(
       'Diya',
       selectedDate
     )
 
   const hamzahTasks =
-    displayTasksFor(
+    getDisplayTasks(
       'Hamzah',
       selectedDate
     )
 
-  /*
-    OVERFLOW
-  */
+  /* =======================================================
+     OVERFLOW
 
-  function overflowFor(
+     Overflow remains database-driven because these are
+     legitimately missed tasks from earlier dates.
+  ======================================================= */
+
+  function getOverflow(
     student,
     iso
   ) {
     return tasks.filter(
       (task) =>
-        task.source_type === SOURCE_TYPE &&
-        task.student_name === student &&
+        task.source_type ===
+          SOURCE_TYPE &&
+        task.student_name ===
+          student &&
         !task.completed &&
         task.carried_forward &&
-        task.current_due_date === iso &&
-        task.task_date < iso &&
-        task.task_type !== 'Chapter'
+        task.current_due_date ===
+          iso &&
+        task.task_date <
+          iso &&
+        task.task_type !==
+          'Chapter'
     )
   }
 
-  /*
-    TASK TOGGLE
+  /* =======================================================
+     TASK COMPLETION
+  ======================================================= */
 
-    Virtual schedule tasks are inserted into Supabase when
-    first checked.
-  */
-
-  async function toggleTask(task) {
-    if (!uid || !supabase) return
+  async function toggleTask(
+    task
+  ) {
+    if (
+      !uid ||
+      !supabase
+    ) {
+      return
+    }
 
     const nextCompleted =
       !task.completed
@@ -755,26 +1152,30 @@ export default function Home() {
 
       const {
         error,
-      } = await supabase
-        .from('daily_tasks')
-        .insert({
-          ...row,
+      } =
+        await supabase
+          .from(
+            'daily_tasks'
+          )
+          .insert({
+            ...row,
 
-          user_id: uid,
+            user_id:
+              uid,
 
-          completed:
-            nextCompleted,
+            completed:
+              nextCompleted,
 
-          completed_at:
-            nextCompleted
-              ? new Date().toISOString()
-              : null,
+            completed_at:
+              nextCompleted
+                ? new Date().toISOString()
+                : null,
 
-          status:
-            nextCompleted
-              ? 'completed'
-              : 'scheduled',
-        })
+            status:
+              nextCompleted
+                ? 'completed'
+                : 'scheduled',
+          })
 
       if (error) {
         setMessage(
@@ -784,9 +1185,13 @@ export default function Home() {
         return
       }
     } else {
-      const { error } =
+      const {
+        error,
+      } =
         await supabase
-          .from('daily_tasks')
+          .from(
+            'daily_tasks'
+          )
           .update({
             completed:
               nextCompleted,
@@ -803,11 +1208,20 @@ export default function Home() {
                 ? 'overdue'
                 : 'scheduled',
           })
-          .eq('id', task.id)
-          .eq('user_id', uid)
+          .eq(
+            'id',
+            task.id
+          )
+          .eq(
+            'user_id',
+            uid
+          )
 
       if (error) {
-        setMessage(error.message)
+        setMessage(
+          error.message
+        )
+
         return
       }
     }
@@ -815,18 +1229,23 @@ export default function Home() {
     await loadAll()
   }
 
-  /*
-    QUESTION LOGGING
-  */
+  /* =======================================================
+     QUESTION LOG
+  ======================================================= */
 
   async function addQuestionBlock(
     data
   ) {
-    const { error } =
+    const {
+      error,
+    } =
       await supabase
-        .from('question_blocks')
+        .from(
+          'question_blocks'
+        )
         .insert({
-          user_id: uid,
+          user_id:
+            uid,
 
           question_date:
             data.date,
@@ -838,25 +1257,33 @@ export default function Home() {
             data.subject,
 
           total_questions:
-            Number(data.total),
+            Number(
+              data.total
+            ),
 
           correct_questions:
-            Number(data.correct),
+            Number(
+              data.correct
+            ),
 
           timed:
-            Boolean(data.timed),
+            Boolean(
+              data.timed
+            ),
         })
 
     if (error) {
-      setMessage(error.message)
+      setMessage(
+        error.message
+      )
     } else {
       await loadAll()
     }
   }
 
-  /*
-    FULL LENGTH LOGGING
-  */
+  /* =======================================================
+     FULL LENGTH LOG
+  ======================================================= */
 
   async function addFullLength(
     data
@@ -867,11 +1294,16 @@ export default function Home() {
       Number(data.bb) +
       Number(data.ps)
 
-    const { error } =
+    const {
+      error,
+    } =
       await supabase
-        .from('full_length_scores')
+        .from(
+          'full_length_scores'
+        )
         .insert({
-          user_id: uid,
+          user_id:
+            uid,
 
           exam_date:
             data.date,
@@ -880,51 +1312,70 @@ export default function Home() {
             `${data.student} — ${data.name}`,
 
           cp_score:
-            Number(data.cp),
+            Number(
+              data.cp
+            ),
 
           cars_score:
-            Number(data.cars),
+            Number(
+              data.cars
+            ),
 
           bb_score:
-            Number(data.bb),
+            Number(
+              data.bb
+            ),
 
           ps_score:
-            Number(data.ps),
+            Number(
+              data.ps
+            ),
 
           total_score:
             total,
         })
 
     if (error) {
-      setMessage(error.message)
+      setMessage(
+        error.message
+      )
     } else {
       await loadAll()
     }
   }
 
-  /*
-    STUDY SESSION
-  */
+  /* =======================================================
+     STUDY SESSION
+  ======================================================= */
 
   async function logSession(
     student,
     minutes,
     type = 'Focus'
   ) {
-    const { error } =
+    const {
+      error,
+    } =
       await supabase
-        .from('study_sessions')
+        .from(
+          'study_sessions'
+        )
         .insert({
-          user_id: uid,
+          user_id:
+            uid,
 
           session_date:
             localISO(),
 
           actual_minutes:
-            Number(minutes),
+            Number(
+              minutes
+            ),
 
           planned_minutes:
-            Number(minutes),
+            Number(
+              minutes
+            ),
 
           session_type:
             `${student} — ${type}`,
@@ -934,15 +1385,17 @@ export default function Home() {
         })
 
     if (error) {
-      setMessage(error.message)
+      setMessage(
+        error.message
+      )
     } else {
       await loadAll()
     }
   }
 
-  /*
-    AUTH SCREEN
-  */
+  /* =======================================================
+     LOGIN SCREEN
+  ======================================================= */
 
   if (authLoading) {
     return (
@@ -952,7 +1405,9 @@ export default function Home() {
             MCAT Study Tracker
           </h1>
 
-          <p>Loading...</p>
+          <p>
+            Loading...
+          </p>
         </div>
       </div>
     )
@@ -963,7 +1418,9 @@ export default function Home() {
       <div className="auth">
         <form
           className="card authCard"
-          onSubmit={handleAuth}
+          onSubmit={
+            handleAuth
+          }
         >
           <div className="logo">
             <span>M</span>
@@ -974,7 +1431,8 @@ export default function Home() {
               </b>
 
               <small>
-                JANUARY 21, 2027
+                JANUARY 21,
+                2027
               </small>
             </div>
           </div>
@@ -987,17 +1445,21 @@ export default function Home() {
           </h1>
 
           <p>
-            Diya + Hamzah MCAT
-            Study System
+            Diya + Hamzah
+            MCAT Study
+            System
           </p>
 
           <input
             type="email"
             placeholder="Email"
             value={email}
-            onChange={(e) =>
+            onChange={(
+              event
+            ) =>
               setEmail(
-                e.target.value
+                event.target
+                  .value
               )
             }
             required
@@ -1006,16 +1468,23 @@ export default function Home() {
           <input
             type="password"
             placeholder="Password"
-            value={password}
-            onChange={(e) =>
+            value={
+              password
+            }
+            onChange={(
+              event
+            ) =>
               setPassword(
-                e.target.value
+                event.target
+                  .value
               )
             }
             required
           />
 
-          <button type="submit">
+          <button
+            type="submit"
+          >
             {authMode ===
             'signin'
               ? 'Sign In'
@@ -1050,6 +1519,10 @@ export default function Home() {
     )
   }
 
+  /* =======================================================
+     MAIN APP
+  ======================================================= */
+
   const daysLeft =
     Math.max(
       0,
@@ -1066,7 +1539,10 @@ export default function Home() {
           <span>M</span>
 
           <div>
-            <b>MCAT TRACKER</b>
+            <b>
+              MCAT TRACKER
+            </b>
+
             <small>
               V5 STUDY SYSTEM
             </small>
@@ -1078,7 +1554,9 @@ export default function Home() {
             SHARED ACCOUNT
           </small>
 
-          <b>Diya + Hamzah</b>
+          <b>
+            Diya + Hamzah
+          </b>
 
           <span>
             Target: 512+
@@ -1093,26 +1571,37 @@ export default function Home() {
             'Full Lengths',
             'Together',
             'Analytics',
-          ].map((item) => (
-            <button
-              key={item}
-              className={
-                view === item
-                  ? 'active'
-                  : ''
-              }
-              onClick={() =>
-                setView(item)
-              }
-            >
-              {item}
-            </button>
-          ))}
+          ].map(
+            (item) => (
+              <button
+                key={item}
+                className={
+                  view ===
+                  item
+                    ? 'active'
+                    : ''
+                }
+                onClick={() =>
+                  setView(
+                    item
+                  )
+                }
+              >
+                {item}
+              </button>
+            )
+          )}
         </nav>
 
         <div className="sideExam">
-          <small>MCAT</small>
-          <b>{daysLeft}</b>
+          <small>
+            MCAT
+          </small>
+
+          <b>
+            {daysLeft}
+          </b>
+
           <span>
             days remaining
           </span>
@@ -1131,18 +1620,24 @@ export default function Home() {
       <main className="content">
         <header className="header">
           <div>
-            <h1>{view}</h1>
+            <h1>
+              {view}
+            </h1>
 
             <p>
-              Diya + Hamzah •
-              MCAT January 21,
-              2027
+              Diya + Hamzah
+              {' • '}
+              MCAT January
+              21, 2027
             </p>
           </div>
 
           <div className="headerRight">
             <div className="countdown">
-              <b>{daysLeft}</b>
+              <b>
+                {daysLeft}
+              </b>
+
               <span>
                 DAYS TO MCAT
               </span>
@@ -1156,7 +1651,8 @@ export default function Home() {
           </div>
         )}
 
-        {view === 'Today' && (
+        {view ===
+          'Today' && (
           <TodayView
             selectedDate={
               selectedDate
@@ -1171,18 +1667,20 @@ export default function Home() {
               hamzahTasks
             }
             diyaOverflow={
-              overflowFor(
+              getOverflow(
                 'Diya',
                 selectedDate
               )
             }
             hamzahOverflow={
-              overflowFor(
+              getOverflow(
                 'Hamzah',
                 selectedDate
               )
             }
-            allTasks={tasks}
+            allTasks={
+              tasks
+            }
             currentChapter={
               currentChapter
             }
@@ -1195,14 +1693,18 @@ export default function Home() {
             logSession={
               logSession
             }
-            syncing={syncing}
+            syncing={
+              syncing
+            }
           />
         )}
 
         {view ===
           'Calendar' && (
           <CalendarView
-            tasks={tasks}
+            tasks={
+              tasks
+            }
             selectedDate={
               selectedDate
             }
@@ -1213,7 +1715,9 @@ export default function Home() {
                 date
               )
 
-              setView('Today')
+              setView(
+                'Today'
+              )
             }}
           />
         )}
@@ -1221,7 +1725,9 @@ export default function Home() {
         {view ===
           'Questions' && (
           <QuestionsView
-            logs={questionLogs}
+            logs={
+              questionLogs
+            }
             addQuestionBlock={
               addQuestionBlock
             }
@@ -1231,7 +1737,9 @@ export default function Home() {
         {view ===
           'Full Lengths' && (
           <FullLengthsView
-            rows={fullLengths}
+            rows={
+              fullLengths
+            }
             addFullLength={
               addFullLength
             }
@@ -1250,7 +1758,9 @@ export default function Home() {
         {view ===
           'Analytics' && (
           <AnalyticsView
-            tasks={tasks}
+            tasks={
+              tasks
+            }
             questionLogs={
               questionLogs
             }
@@ -1270,9 +1780,9 @@ export default function Home() {
   )
 }
 
-/*
-  TODAY
-*/
+/* =========================================================
+   TODAY VIEW
+========================================================= */
 
 function TodayView({
   selectedDate,
@@ -1289,10 +1799,14 @@ function TodayView({
   syncing,
 }) {
   const week =
-    weekDates(selectedDate)
+    weekDates(
+      selectedDate
+    )
 
   const scheduleDay =
-    dayFor(selectedDate)
+    getScheduleDay(
+      selectedDate
+    )
 
   return (
     <>
@@ -1306,8 +1820,8 @@ function TodayView({
             <h2>
               {formatDate(
                 week[0]
-              )}{' '}
-              –{' '}
+              )}
+              {' – '}
               {formatDate(
                 week[6],
                 false,
@@ -1318,117 +1832,124 @@ function TodayView({
         </div>
 
         <div className="weekDays">
-          {week.map((date) => {
-            const expected = [
-              ...expectedTasks(
-                date,
-                'Diya',
-                currentChapter
-              ),
+          {week.map(
+            (date) => {
+              const expected =
+                [
+                  ...generateExpectedTasks(
+                    date,
+                    'Diya',
+                    currentChapter
+                  ),
 
-              ...expectedTasks(
-                date,
-                'Hamzah',
-                currentChapter
-              ),
-            ].filter(
-              (task) =>
-                task.task_type !==
-                'Chapter'
-            )
+                  ...generateExpectedTasks(
+                    date,
+                    'Hamzah',
+                    currentChapter
+                  ),
+                ].filter(
+                  (task) =>
+                    task.task_type !==
+                    'Chapter'
+                )
 
-            const dbRows =
-              allTasks.filter(
-                (task) =>
-                  task.task_date ===
-                    date &&
-                  task.source_type ===
-                    SOURCE_TYPE
-              )
+              const database =
+                allTasks.filter(
+                  (task) =>
+                    task.task_date ===
+                      date &&
+                    task.source_type ===
+                      SOURCE_TYPE
+                )
 
-            const displayed =
-              mergeExpectedWithDatabase(
-                expected,
-                dbRows
-              )
+              const displayed =
+                mergeScheduleWithDatabase(
+                  expected,
+                  database
+                )
 
-            const completed =
-              displayed.length > 0 &&
-              displayed.every(
-                (task) =>
-                  task.completed
-              )
+              const completed =
+                displayed.length >
+                  0 &&
+                displayed.every(
+                  (task) =>
+                    task.completed
+                )
 
-            const missed =
-              date < localISO() &&
-              displayed.some(
-                (task) =>
-                  !task.completed
-              )
+              const missed =
+                date <
+                  localISO() &&
+                displayed.some(
+                  (task) =>
+                    !task.completed
+                )
 
-            return (
-              <button
-                key={date}
-                className={[
-                  selectedDate ===
-                  date
-                    ? 'selected'
-                    : '',
-
-                  date ===
-                  localISO()
-                    ? 'current'
-                    : '',
-
-                  completed
-                    ? 'complete'
-                    : '',
-
-                  missed
-                    ? 'missed'
-                    : '',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-                onClick={() =>
-                  setSelectedDate(
+              return (
+                <button
+                  key={date}
+                  className={[
+                    selectedDate ===
                     date
-                  )
-                }
-              >
-                <small>
-                  {fromISO(
-                    date
-                  ).toLocaleDateString(
-                    'en-US',
+                      ? 'selected'
+                      : '',
+
+                    date ===
+                    localISO()
+                      ? 'current'
+                      : '',
+
+                    completed
+                      ? 'complete'
+                      : '',
+
+                    missed
+                      ? 'missed'
+                      : '',
+                  ]
+                    .filter(
+                      Boolean
+                    )
+                    .join(' ')}
+                  onClick={() =>
+                    setSelectedDate(
+                      date
+                    )
+                  }
+                >
+                  <small>
+                    {fromISO(
+                      date
+                    ).toLocaleDateString(
+                      'en-US',
+                      {
+                        weekday:
+                          'short',
+                      }
+                    )}
+                  </small>
+
+                  <b>
+                    {fromISO(
+                      date
+                    ).getDate()}
+                  </b>
+
+                  <span>
                     {
-                      weekday:
-                        'short',
+                      displayed.filter(
+                        (task) =>
+                          task.completed
+                      ).length
                     }
-                  )}
-                </small>
-
-                <b>
-                  {fromISO(
-                    date
-                  ).getDate()}
-                </b>
-
-                <span>
-                  {
-                    displayed.filter(
-                      (task) =>
-                        task.completed
-                    ).length
-                  }
-                  /
-                  {
-                    displayed.length
-                  }
-                </span>
-              </button>
-            )
-          })}
+                    /
+                    {
+                      displayed.length
+                    }
+                  </span>
+                </button>
+              )
+            }
+          )}
         </div>
       </div>
 
@@ -1439,18 +1960,12 @@ function TodayView({
         </div>
       )}
 
-      {!scheduleDay && (
-        <div className="message">
-          No schedule entry
-          exists for this date.
-        </div>
-      )}
-
       <StudentHeader
         name="Diya"
         subtitle="Question-Heavy Track • 512+ Target"
-        badge={fmtMin(
-          scheduleDay?.diya
+        badge={formatMinutes(
+          scheduleDay
+            ?.diya
             ?.target_minutes ||
             sumMinutes(
               diyaTasks
@@ -1460,11 +1975,15 @@ function TodayView({
 
       <StudentDashboard
         student="Diya"
-        date={selectedDate}
+        date={
+          selectedDate
+        }
         plan={
           scheduleDay?.diya
         }
-        tasks={diyaTasks}
+        tasks={
+          diyaTasks
+        }
         overflow={
           diyaOverflow
         }
@@ -1481,8 +2000,9 @@ function TodayView({
       <StudentHeader
         name="Hamzah"
         subtitle="Content + Question Track • 512+ Target"
-        badge={fmtMin(
-          scheduleDay?.hamzah
+        badge={formatMinutes(
+          scheduleDay
+            ?.hamzah
             ?.target_minutes ||
             sumMinutes(
               hamzahTasks
@@ -1491,9 +2011,12 @@ function TodayView({
       />
 
       <HamzahDashboard
-        date={selectedDate}
+        date={
+          selectedDate
+        }
         plan={
-          scheduleDay?.hamzah
+          scheduleDay
+            ?.hamzah
         }
         tasks={
           hamzahTasks
@@ -1518,6 +2041,10 @@ function TodayView({
   )
 }
 
+/* =========================================================
+   STUDENT HEADER
+========================================================= */
+
 function StudentHeader({
   name,
   subtitle,
@@ -1530,9 +2057,13 @@ function StudentHeader({
           STUDENT
         </small>
 
-        <h2>{name}</h2>
+        <h2>
+          {name}
+        </h2>
 
-        <p>{subtitle}</p>
+        <p>
+          {subtitle}
+        </p>
       </div>
 
       <strong>
@@ -1542,9 +2073,9 @@ function StudentHeader({
   )
 }
 
-/*
-  DIYA DASHBOARD
-*/
+/* =========================================================
+   DIYA DASHBOARD
+========================================================= */
 
 function StudentDashboard({
   student,
@@ -1571,8 +2102,12 @@ function StudentDashboard({
   return (
     <>
       <OverflowPanel
-        student={student}
-        rows={overflow}
+        student={
+          student
+        }
+        rows={
+          overflow
+        }
         toggleTask={
           toggleTask
         }
@@ -1596,7 +2131,8 @@ function StudentDashboard({
           </h2>
 
           <p>
-            Questions → deep
+            Timed section
+            practice → deep
             review → targeted
             repair → Anki →
             recall.
@@ -1610,7 +2146,7 @@ function StudentDashboard({
             </small>
 
             <b>
-              {fmtMin(
+              {formatMinutes(
                 sumMinutes(
                   realTasks
                 )
@@ -1637,7 +2173,7 @@ function StudentDashboard({
             </small>
 
             <b>
-              {fmtMin(
+              {formatMinutes(
                 sumMinutes(
                   overflow
                 )
@@ -1687,7 +2223,8 @@ function StudentDashboard({
           </div>
 
           <div className="taskList">
-            {realTasks.length ? (
+            {realTasks.length >
+            0 ? (
               realTasks.map(
                 (task) => (
                   <TaskRow
@@ -1726,9 +2263,9 @@ function StudentDashboard({
   )
 }
 
-/*
-  HAMZAH DASHBOARD
-*/
+/* =========================================================
+   HAMZAH DASHBOARD
+========================================================= */
 
 function HamzahDashboard({
   date,
@@ -1764,7 +2301,9 @@ function HamzahDashboard({
     <>
       <OverflowPanel
         student="Hamzah"
-        rows={overflow}
+        rows={
+          overflow
+        }
         toggleTask={
           toggleTask
         }
@@ -1802,8 +2341,7 @@ function HamzahDashboard({
             </b>
 
             <span>
-              {' '}
-              /{' '}
+              {' / '}
               {
                 chapterProgress.total
               }
@@ -1850,7 +2388,7 @@ function HamzahDashboard({
 
           <p>
             Target workload:{' '}
-            {fmtMin(
+            {formatMinutes(
               plan?.target_minutes ||
                 sumMinutes(
                   realTasks
@@ -1867,7 +2405,7 @@ function HamzahDashboard({
             </small>
 
             <b>
-              {fmtMin(
+              {formatMinutes(
                 sumMinutes(
                   realTasks
                 )
@@ -1894,7 +2432,7 @@ function HamzahDashboard({
             </small>
 
             <b>
-              {fmtMin(
+              {formatMinutes(
                 sumMinutes(
                   overflow
                 )
@@ -1933,7 +2471,8 @@ function HamzahDashboard({
               </small>
 
               <h2>
-                Hamzah's Work
+                Hamzah's
+                Work
               </h2>
             </div>
 
@@ -1943,7 +2482,8 @@ function HamzahDashboard({
           </div>
 
           <div className="taskList">
-            {realTasks.length ? (
+            {realTasks.length >
+            0 ? (
               realTasks.map(
                 (task) => (
                   <TaskRow
@@ -1968,7 +2508,8 @@ function HamzahDashboard({
             )}
           </div>
 
-          {!!chapterTasks.length && (
+          {chapterTasks.length >
+            0 && (
             <div className="chapterChecklist">
               <small>
                 CHAPTER
@@ -2006,9 +2547,9 @@ function HamzahDashboard({
   )
 }
 
-/*
-  OVERFLOW
-*/
+/* =========================================================
+   OVERFLOW
+========================================================= */
 
 function OverflowPanel({
   student,
@@ -2034,8 +2575,10 @@ function OverflowPanel({
         </div>
 
         <strong>
-          {fmtMin(
-            sumMinutes(rows)
+          {formatMinutes(
+            sumMinutes(
+              rows
+            )
           )}
         </strong>
       </div>
@@ -2044,8 +2587,12 @@ function OverflowPanel({
         {rows.map(
           (task) => (
             <TaskRow
-              key={task.id}
-              task={task}
+              key={
+                task.id
+              }
+              task={
+                task
+              }
               toggleTask={
                 toggleTask
               }
@@ -2058,9 +2605,9 @@ function OverflowPanel({
   )
 }
 
-/*
-  TASK ROW
-*/
+/* =========================================================
+   TASK ROW
+========================================================= */
 
 function TaskRow({
   task,
@@ -2090,7 +2637,9 @@ function TaskRow({
             : ''
         }`}
         onClick={() =>
-          toggleTask(task)
+          toggleTask(
+            task
+          )
         }
       >
         {task.completed
@@ -2111,7 +2660,9 @@ function TaskRow({
 
         {task.description && (
           <span>
-            {task.description}
+            {
+              task.description
+            }
           </span>
         )}
 
@@ -2119,7 +2670,7 @@ function TaskRow({
           {Number(
             task.estimated_minutes
           ) > 0
-            ? fmtMin(
+            ? formatMinutes(
                 task.estimated_minutes
               )
             : ''}
@@ -2139,9 +2690,9 @@ function TaskRow({
   )
 }
 
-/*
-  PROGRESS
-*/
+/* =========================================================
+   PROGRESS
+========================================================= */
 
 function ProgressCard({
   percent,
@@ -2160,7 +2711,9 @@ function ProgressCard({
           {completed} of{' '}
           {total} tasks
           complete •{' '}
-          {fmtMin(minutes)}{' '}
+          {formatMinutes(
+            minutes
+          )}{' '}
           planned
         </span>
       </div>
@@ -2172,7 +2725,8 @@ function ProgressCard({
       <div className="progress">
         <i
           style={{
-            width: `${percent}%`,
+            width:
+              `${percent}%`,
           }}
         />
       </div>
@@ -2180,28 +2734,38 @@ function ProgressCard({
   )
 }
 
-/*
-  POMODORO
-*/
+/* =========================================================
+   POMODORO
+========================================================= */
 
 function Pomodoro({
   student,
   logSession,
 }) {
-  const [focus, setFocus] =
-    useState(50)
+  const [
+    focus,
+    setFocus,
+  ] = useState(50)
 
-  const [breakMinutes, setBreakMinutes] =
-    useState(10)
+  const [
+    breakMinutes,
+    setBreakMinutes,
+  ] = useState(10)
 
-  const [mode, setMode] =
-    useState('Focus')
+  const [
+    mode,
+    setMode,
+  ] = useState('Focus')
 
-  const [seconds, setSeconds] =
-    useState(3000)
+  const [
+    seconds,
+    setSeconds,
+  ] = useState(3000)
 
-  const [running, setRunning] =
-    useState(false)
+  const [
+    running,
+    setRunning,
+  ] = useState(false)
 
   const intervalRef =
     useRef(null)
@@ -2209,10 +2773,12 @@ function Pomodoro({
   useEffect(() => {
     if (!running) {
       setSeconds(
-        (mode === 'Focus'
-          ? focus
-          : breakMinutes) *
-          60
+        (
+          mode ===
+          'Focus'
+            ? focus
+            : breakMinutes
+        ) * 60
       )
     }
   }, [
@@ -2235,12 +2801,16 @@ function Pomodoro({
       setInterval(() => {
         setSeconds(
           (current) => {
-            if (current <= 1) {
+            if (
+              current <= 1
+            ) {
               clearInterval(
                 intervalRef.current
               )
 
-              setRunning(false)
+              setRunning(
+                false
+              )
 
               if (
                 mode ===
@@ -2279,12 +2849,18 @@ function Pomodoro({
       Math.floor(
         seconds / 60
       )
-    ).padStart(2, '0')
+    ).padStart(
+      2,
+      '0'
+    )
 
-  const secs =
+  const remainingSeconds =
     String(
       seconds % 60
-    ).padStart(2, '0')
+    ).padStart(
+      2,
+      '0'
+    )
 
   return (
     <div className="card pomodoro">
@@ -2305,14 +2881,20 @@ function Pomodoro({
       </div>
 
       <div className="timer">
-        {minutes}:{secs}
+        {minutes}:
+        {remainingSeconds}
       </div>
 
       <div className="timerModes">
         <button
           onClick={() => {
-            setRunning(false)
-            setMode('Focus')
+            setRunning(
+              false
+            )
+
+            setMode(
+              'Focus'
+            )
           }}
         >
           Focus
@@ -2320,8 +2902,13 @@ function Pomodoro({
 
         <button
           onClick={() => {
-            setRunning(false)
-            setMode('Break')
+            setRunning(
+              false
+            )
+
+            setMode(
+              'Break'
+            )
           }}
         >
           Break
@@ -2335,11 +2922,16 @@ function Pomodoro({
           <input
             type="number"
             min="1"
-            value={focus}
-            onChange={(e) =>
+            value={
+              focus
+            }
+            onChange={(
+              event
+            ) =>
               setFocus(
                 Number(
-                  e.target.value
+                  event.target
+                    .value
                 ) || 1
               )
             }
@@ -2355,10 +2947,13 @@ function Pomodoro({
             value={
               breakMinutes
             }
-            onChange={(e) =>
+            onChange={(
+              event
+            ) =>
               setBreakMinutes(
                 Number(
-                  e.target.value
+                  event.target
+                    .value
                 ) || 1
               )
             }
@@ -2383,20 +2978,24 @@ function Pomodoro({
   )
 }
 
-/*
-  CALENDAR
-*/
+/* =========================================================
+   CALENDAR
+========================================================= */
 
 function CalendarView({
   tasks,
   selectedDate,
   chooseDate,
 }) {
-  const [monthOffset, setMonthOffset] =
-    useState(0)
+  const [
+    monthOffset,
+    setMonthOffset,
+  ] = useState(0)
 
   const base =
-    fromISO(selectedDate)
+    fromISO(
+      selectedDate
+    )
 
   const month =
     new Date(
@@ -2493,23 +3092,24 @@ function CalendarView({
       <div className="calendarGrid">
         {dates.map(
           (date) => {
-            const expected = [
-              ...expectedTasks(
-                date,
-                'Diya',
-                currentChapter
-              ),
+            const expected =
+              [
+                ...generateExpectedTasks(
+                  date,
+                  'Diya',
+                  currentChapter
+                ),
 
-              ...expectedTasks(
-                date,
-                'Hamzah',
-                currentChapter
-              ),
-            ].filter(
-              (task) =>
-                task.task_type !==
-                'Chapter'
-            )
+                ...generateExpectedTasks(
+                  date,
+                  'Hamzah',
+                  currentChapter
+                ),
+              ].filter(
+                (task) =>
+                  task.task_type !==
+                  'Chapter'
+              )
 
             const database =
               tasks.filter(
@@ -2521,7 +3121,7 @@ function CalendarView({
               )
 
             const displayed =
-              mergeExpectedWithDatabase(
+              mergeScheduleWithDatabase(
                 expected,
                 database
               )
@@ -2580,40 +3180,58 @@ function CalendarView({
   )
 }
 
-/*
-  QUESTIONS
-*/
+/* =========================================================
+   QUESTIONS
+========================================================= */
 
 function QuestionsView({
   logs,
   addQuestionBlock,
 }) {
-  const [student, setStudent] =
-    useState('Diya')
+  const [
+    student,
+    setStudent,
+  ] = useState('Diya')
 
-  const [date, setDate] =
-    useState(localISO())
+  const [
+    date,
+    setDate,
+  ] = useState(
+    localISO()
+  )
 
-  const [source, setSource] =
-    useState('UWorld')
+  const [
+    source,
+    setSource,
+  ] = useState('UWorld')
 
-  const [subject, setSubject] =
-    useState('B/B')
+  const [
+    subject,
+    setSubject,
+  ] = useState('B/B')
 
-  const [total, setTotal] =
-    useState(20)
+  const [
+    total,
+    setTotal,
+  ] = useState(59)
 
-  const [correct, setCorrect] =
-    useState(0)
+  const [
+    correct,
+    setCorrect,
+  ] = useState(0)
 
-  const [timed, setTimed] =
-    useState(true)
+  const [
+    timed,
+    setTimed,
+  ] = useState(true)
 
   return (
     <div className="dashboardGrid">
       <form
         className="card form"
-        onSubmit={(event) => {
+        onSubmit={(
+          event
+        ) => {
           event.preventDefault()
 
           addQuestionBlock({
@@ -2644,10 +3262,15 @@ function QuestionsView({
           Student
 
           <select
-            value={student}
-            onChange={(e) =>
+            value={
+              student
+            }
+            onChange={(
+              event
+            ) =>
               setStudent(
-                e.target.value
+                event.target
+                  .value
               )
             }
           >
@@ -2666,10 +3289,15 @@ function QuestionsView({
 
           <input
             type="date"
-            value={date}
-            onChange={(e) =>
+            value={
+              date
+            }
+            onChange={(
+              event
+            ) =>
               setDate(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2679,10 +3307,15 @@ function QuestionsView({
           Resource
 
           <input
-            value={source}
-            onChange={(e) =>
+            value={
+              source
+            }
+            onChange={(
+              event
+            ) =>
               setSource(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2692,10 +3325,15 @@ function QuestionsView({
           Section
 
           <input
-            value={subject}
-            onChange={(e) =>
+            value={
+              subject
+            }
+            onChange={(
+              event
+            ) =>
               setSubject(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2707,10 +3345,15 @@ function QuestionsView({
           <input
             type="number"
             min="1"
-            value={total}
-            onChange={(e) =>
+            value={
+              total
+            }
+            onChange={(
+              event
+            ) =>
               setTotal(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2722,10 +3365,15 @@ function QuestionsView({
           <input
             type="number"
             min="0"
-            value={correct}
-            onChange={(e) =>
+            value={
+              correct
+            }
+            onChange={(
+              event
+            ) =>
               setCorrect(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2734,10 +3382,15 @@ function QuestionsView({
         <label className="checkboxLabel">
           <input
             type="checkbox"
-            checked={timed}
-            onChange={(e) =>
+            checked={
+              timed
+            }
+            onChange={(
+              event
+            ) =>
               setTimed(
-                e.target.checked
+                event.target
+                  .checked
               )
             }
           />
@@ -2745,7 +3398,9 @@ function QuestionsView({
           Timed
         </label>
 
-        <button type="submit">
+        <button
+          type="submit"
+        >
           Save Question
           Block
         </button>
@@ -2767,99 +3422,133 @@ function QuestionsView({
 
         <div className="logList">
           {logs
-            .slice(0, 30)
-            .map((row) => {
-              const total =
-                Number(
-                  row.total_questions
-                ) || 0
+            .slice(
+              0,
+              30
+            )
+            .map(
+              (row) => {
+                const totalQuestions =
+                  Number(
+                    row.total_questions
+                  ) || 0
 
-              const correct =
-                Number(
-                  row.correct_questions
-                ) || 0
+                const correctQuestions =
+                  Number(
+                    row.correct_questions
+                  ) || 0
 
-              const accuracy =
-                total
-                  ? Math.round(
-                      (correct /
-                        total) *
-                        100
-                    )
-                  : 0
+                const accuracy =
+                  totalQuestions
+                    ? Math.round(
+                        (
+                          correctQuestions /
+                          totalQuestions
+                        ) *
+                          100
+                      )
+                    : 0
 
-              return (
-                <div
-                  className="logRow"
-                  key={row.id}
-                >
-                  <div>
-                    <small>
-                      {formatDate(
-                        row.question_date
-                      )}{' '}
-                      •{' '}
-                      {
-                        row.source
-                      }
-                    </small>
+                return (
+                  <div
+                    className="logRow"
+                    key={
+                      row.id
+                    }
+                  >
+                    <div>
+                      <small>
+                        {formatDate(
+                          row.question_date
+                        )}
+                        {' • '}
+                        {
+                          row.source
+                        }
+                      </small>
 
-                    <b>
-                      {
-                        row.subject
-                      }{' '}
-                      •{' '}
-                      {correct}/
-                      {total}
-                    </b>
+                      <b>
+                        {
+                          row.subject
+                        }
+                        {' • '}
+                        {
+                          correctQuestions
+                        }
+                        /
+                        {
+                          totalQuestions
+                        }
+                      </b>
+                    </div>
+
+                    <strong>
+                      {accuracy}%
+                    </strong>
                   </div>
-
-                  <strong>
-                    {accuracy}%
-                  </strong>
-                </div>
-              )
-            })}
+                )
+              }
+            )}
         </div>
       </div>
     </div>
   )
 }
 
-/*
-  FULL LENGTHS
-*/
+/* =========================================================
+   FULL LENGTHS
+========================================================= */
 
 function FullLengthsView({
   rows,
   addFullLength,
 }) {
-  const [student, setStudent] =
-    useState('Diya')
+  const [
+    student,
+    setStudent,
+  ] = useState('Diya')
 
-  const [date, setDate] =
-    useState(localISO())
+  const [
+    date,
+    setDate,
+  ] = useState(
+    localISO()
+  )
 
-  const [name, setName] =
-    useState('AAMC FL')
+  const [
+    name,
+    setName,
+  ] = useState(
+    'AAMC FL'
+  )
 
-  const [cp, setCp] =
-    useState(125)
+  const [
+    cp,
+    setCp,
+  ] = useState(125)
 
-  const [cars, setCars] =
-    useState(125)
+  const [
+    cars,
+    setCars,
+  ] = useState(125)
 
-  const [bb, setBb] =
-    useState(125)
+  const [
+    bb,
+    setBb,
+  ] = useState(125)
 
-  const [ps, setPs] =
-    useState(125)
+  const [
+    ps,
+    setPs,
+  ] = useState(125)
 
   return (
     <div className="dashboardGrid">
       <form
         className="card form"
-        onSubmit={(event) => {
+        onSubmit={(
+          event
+        ) => {
           event.preventDefault()
 
           addFullLength({
@@ -2889,10 +3578,15 @@ function FullLengthsView({
           Student
 
           <select
-            value={student}
-            onChange={(e) =>
+            value={
+              student
+            }
+            onChange={(
+              event
+            ) =>
               setStudent(
-                e.target.value
+                event.target
+                  .value
               )
             }
           >
@@ -2911,10 +3605,15 @@ function FullLengthsView({
 
           <input
             type="date"
-            value={date}
-            onChange={(e) =>
+            value={
+              date
+            }
+            onChange={(
+              event
+            ) =>
               setDate(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2924,10 +3623,15 @@ function FullLengthsView({
           Exam
 
           <input
-            value={name}
-            onChange={(e) =>
+            value={
+              name
+            }
+            onChange={(
+              event
+            ) =>
               setName(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2940,10 +3644,15 @@ function FullLengthsView({
             type="number"
             min="118"
             max="132"
-            value={cp}
-            onChange={(e) =>
+            value={
+              cp
+            }
+            onChange={(
+              event
+            ) =>
               setCp(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2956,10 +3665,15 @@ function FullLengthsView({
             type="number"
             min="118"
             max="132"
-            value={cars}
-            onChange={(e) =>
+            value={
+              cars
+            }
+            onChange={(
+              event
+            ) =>
               setCars(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2972,10 +3686,15 @@ function FullLengthsView({
             type="number"
             min="118"
             max="132"
-            value={bb}
-            onChange={(e) =>
+            value={
+              bb
+            }
+            onChange={(
+              event
+            ) =>
               setBb(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
@@ -2988,16 +3707,23 @@ function FullLengthsView({
             type="number"
             min="118"
             max="132"
-            value={ps}
-            onChange={(e) =>
+            value={
+              ps
+            }
+            onChange={(
+              event
+            ) =>
               setPs(
-                e.target.value
+                event.target
+                  .value
               )
             }
           />
         </label>
 
-        <button type="submit">
+        <button
+          type="submit"
+        >
           Save Full
           Length
         </button>
@@ -3021,7 +3747,9 @@ function FullLengthsView({
             (row) => (
               <div
                 className="flRow"
-                key={row.id}
+                key={
+                  row.id
+                }
               >
                 <div>
                   <small>
@@ -3040,16 +3768,19 @@ function FullLengthsView({
                     C/P{' '}
                     {
                       row.cp_score
-                    }{' '}
-                    • CARS{' '}
+                    }
+                    {' • '}
+                    CARS{' '}
                     {
                       row.cars_score
-                    }{' '}
-                    • B/B{' '}
+                    }
+                    {' • '}
+                    B/B{' '}
                     {
                       row.bb_score
-                    }{' '}
-                    • P/S{' '}
+                    }
+                    {' • '}
+                    P/S{' '}
                     {
                       row.ps_score
                     }
@@ -3070,14 +3801,14 @@ function FullLengthsView({
   )
 }
 
-/*
-  TOGETHER
-*/
+/* =========================================================
+   TOGETHER
+========================================================= */
 
 function TogetherView({
   sessions,
 }) {
-  const dates =
+  const fullLengthDates =
     config.shared
       ?.full_length_dates ||
     []
@@ -3100,11 +3831,16 @@ function TogetherView({
         </div>
 
         <div className="partnerList">
-          {dates.map(
-            (date, index) => (
+          {fullLengthDates.map(
+            (
+              date,
+              index
+            ) => (
               <div
                 className="partnerRow"
-                key={date}
+                key={
+                  date
+                }
               >
                 <div>
                   <small>
@@ -3142,42 +3878,49 @@ function TogetherView({
 
         <div className="logList">
           {sessions
-            .slice(0, 20)
-            .map((row) => (
-              <div
-                className="logRow"
-                key={row.id}
-              >
-                <div>
-                  <small>
-                    {formatDate(
-                      row.session_date
+            .slice(
+              0,
+              20
+            )
+            .map(
+              (row) => (
+                <div
+                  className="logRow"
+                  key={
+                    row.id
+                  }
+                >
+                  <div>
+                    <small>
+                      {formatDate(
+                        row.session_date
+                      )}
+                    </small>
+
+                    <b>
+                      {
+                        row.session_type
+                      }
+                    </b>
+                  </div>
+
+                  <strong>
+                    {formatMinutes(
+                      row.actual_minutes
                     )}
-                  </small>
-
-                  <b>
-                    {
-                      row.session_type
-                    }
-                  </b>
+                  </strong>
                 </div>
-
-                <strong>
-                  {fmtMin(
-                    row.actual_minutes
-                  )}
-                </strong>
-              </div>
-            ))}
+              )
+            )}
         </div>
       </div>
     </div>
   )
 }
 
-/*
-  ANALYTICS
-*/
+/* =========================================================
+   ANALYTICS
+========================================================= */
 
 function AnalyticsView({
   tasks,
@@ -3186,7 +3929,7 @@ function AnalyticsView({
   sessions,
   chapterProgress,
 }) {
-  const diya =
+  const diyaTasks =
     tasks.filter(
       (task) =>
         task.student_name ===
@@ -3195,7 +3938,7 @@ function AnalyticsView({
           'Chapter'
     )
 
-  const hamzah =
+  const hamzahTasks =
     tasks.filter(
       (task) =>
         task.student_name ===
@@ -3235,25 +3978,29 @@ function AnalyticsView({
     )
 
   const diyaPercent =
-    diya.length
+    diyaTasks.length
       ? Math.round(
-          (diya.filter(
-            (task) =>
-              task.completed
-          ).length /
-            diya.length) *
+          (
+            diyaTasks.filter(
+              (task) =>
+                task.completed
+            ).length /
+            diyaTasks.length
+          ) *
             100
         )
       : 0
 
   const hamzahPercent =
-    hamzah.length
+    hamzahTasks.length
       ? Math.round(
-          (hamzah.filter(
-            (task) =>
-              task.completed
-          ).length /
-            hamzah.length) *
+          (
+            hamzahTasks.filter(
+              (task) =>
+                task.completed
+            ).length /
+            hamzahTasks.length
+          ) *
             100
         )
       : 0
@@ -3261,8 +4008,10 @@ function AnalyticsView({
   const accuracy =
     totalQuestions
       ? Math.round(
-          (correctQuestions /
-            totalQuestions) *
+          (
+            correctQuestions /
+            totalQuestions
+          ) *
             100
         )
       : 0
@@ -3285,22 +4034,22 @@ function AnalyticsView({
         label="DIYA COMPLETION"
         value={`${diyaPercent}%`}
         subtext={`${
-          diya.filter(
+          diyaTasks.filter(
             (task) =>
               task.completed
           ).length
-        }/${diya.length} tasks`}
+        }/${diyaTasks.length} tasks`}
       />
 
       <Metric
         label="HAMZAH COMPLETION"
         value={`${hamzahPercent}%`}
         subtext={`${
-          hamzah.filter(
+          hamzahTasks.filter(
             (task) =>
               task.completed
           ).length
-        }/${hamzah.length} tasks`}
+        }/${hamzahTasks.length} tasks`}
       />
 
       <Metric
@@ -3319,9 +4068,11 @@ function AnalyticsView({
 
       <Metric
         label="FOCUS TIME"
-        value={fmtMin(
-          focusMinutes
-        )}
+        value={
+          formatMinutes(
+            focusMinutes
+          )
+        }
         subtext={`${sessions.length} sessions`}
       />
 
@@ -3347,7 +4098,9 @@ function Metric({
         {label}
       </small>
 
-      <b>{value}</b>
+      <b>
+        {value}
+      </b>
 
       <span>
         {subtext}
