@@ -4,8 +4,19 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import config from '../data/studyConfig.json'
 
-const EXAM_DATE = config.exam.date
+const EXAM_DATE = config.exam?.date || '2027-01-21'
 const PLAN_START = '2026-10-03'
+
+const DIYA = {
+  name: 'Diya',
+  track: 'Question Track',
+  target: '512+',
+}
+
+const HAMZAH = {
+  name: 'Hamzah',
+  track: 'Kaplan Content Track',
+}
 
 function localISO(date = new Date()) {
   const y = date.getFullYear()
@@ -25,9 +36,7 @@ function addDays(iso, amount) {
 }
 
 function daysBetween(start, end) {
-  return Math.round(
-    (dateFromISO(end) - dateFromISO(start)) / 86400000
-  )
+  return Math.round((dateFromISO(end) - dateFromISO(start)) / 86400000)
 }
 
 function formatDate(iso) {
@@ -50,14 +59,14 @@ function formatMinutes(value) {
 
 function getPhase(date) {
   return (
-    config.diya.phases.find(
-      (phase) => date >= phase.start && date <= phase.end
+    config.diya?.phases?.find(
+      phase => date >= phase.start && date <= phase.end
     ) || null
   )
 }
 
 function getSubject(date) {
-  const rotation = config.diya.subject_rotation
+  const rotation = config.diya?.subject_rotation || ['B/B', 'C/P', 'P/S']
   const index = Math.max(0, daysBetween(PLAN_START, date))
   return rotation[index % rotation.length]
 }
@@ -82,17 +91,15 @@ function getWeekDates(date) {
   })
 }
 
-function generateQuestionTasks(date) {
+function generateDiyaTasks(date) {
   const phase = getPhase(date)
 
-  if (!phase) return []
-
-  if (date === EXAM_DATE || phase.id === 'exam') {
+  if (date === EXAM_DATE) {
     return [
       {
         type: 'Exam',
         title: 'MCAT DAY',
-        description: 'Official MCAT exam day. No study workload.',
+        description: 'Official MCAT exam. No normal study workload.',
         resource: 'AAMC',
         minutes: 0,
         priority: 1,
@@ -102,44 +109,46 @@ function generateQuestionTasks(date) {
     ]
   }
 
+  if (!phase) return []
+
   if (isLightDay(date)) {
     return [
       {
         type: 'CARS',
         title: '2 timed CARS passages + full review',
-        description: 'Light-day CARS practice.',
+        description: 'Light-day CARS practice with careful reasoning review.',
         resource: 'CARS Practice',
-        minutes: 50,
+        minutes: 55,
         priority: 1,
         subject: 'CARS',
         topic: 'CARS',
       },
       {
         type: 'Anki',
-        title: 'Anki due cards + important missed concepts',
-        description: 'Keep retention moving without turning this into a heavy day.',
+        title: 'Anki due cards + high-value missed concepts',
+        description: 'Prioritize retention without letting Anki consume the day.',
         resource: 'Anki',
-        minutes: Math.min(Number(phase.anki_minutes) || 30, 35),
+        minutes: 35,
         priority: 2,
         subject: 'Mixed',
         topic: 'Retention',
       },
       {
         type: 'Review',
-        title: 'Error log + weakest-topic review',
-        description: 'Review recent misses and recurring reasoning problems.',
+        title: 'Weakness and error-log review',
+        description: 'Review recurring misses, guesses, and reasoning errors.',
         resource: 'Error Log',
         minutes: 60,
-        priority: 2,
+        priority: 1,
         subject: 'Mixed',
         topic: 'Weakness Review',
       },
       {
         type: 'Catch-up',
-        title: 'Catch-up / overflow block if needed',
-        description: 'Use this block for important carried work. If caught up, stop early.',
+        title: 'Overflow / catch-up block',
+        description: 'Use this for important carried work. Stop early if caught up.',
         resource: 'Study Tracker',
-        minutes: 60,
+        minutes: 75,
         priority: 1,
         subject: 'Mixed',
         topic: 'Catch-up',
@@ -148,11 +157,8 @@ function generateQuestionTasks(date) {
   }
 
   const subject = getSubject(date)
-  const questionCount = Number(phase.question_target_min) || 50
-  const carsCount = Number(phase.cars_passages_min) || 2
-
-  // The question block includes both answering and detailed review.
-  const questionBlockMinutes = Math.round(questionCount * 3.2)
+  const questionCount = Number(phase.question_target_min) || 60
+  const carsCount = Number(phase.cars_passages_min) || 3
 
   return [
     {
@@ -160,20 +166,28 @@ function generateQuestionTasks(date) {
       title: `${questionCount} timed ${subject} questions + deep review`,
       description:
         'Review every incorrect answer, guessed correct answer, and uncertain correct answer.',
-      resource: phase.primary_resource,
-      minutes: questionBlockMinutes,
+      resource: phase.primary_resource || 'UWorld',
+      minutes: Math.round(questionCount * 3.4),
       priority: 1,
       subject,
       topic: 'Mixed Practice',
     },
     {
+      type: 'Targeted Questions',
+      title: `15 targeted questions from your weakest ${subject} topic`,
+      description:
+        'Use your error log to choose the weakness. Accuracy matters less than exposing gaps.',
+      resource: phase.primary_resource || 'UWorld',
+      minutes: 55,
+      priority: 1,
+      subject,
+      topic: 'Weakness Practice',
+    },
+    {
       type: 'CARS',
       title: `${carsCount} timed CARS passages + review`,
-      description: 'Focus on reasoning and passage evidence.',
-      resource:
-        phase.primary_resource === 'AAMC'
-          ? 'AAMC'
-          : 'CARS Practice',
+      description: 'Focus on passage evidence and reasoning rather than outside knowledge.',
+      resource: phase.primary_resource === 'AAMC' ? 'AAMC' : 'CARS Practice',
       minutes: carsCount * 25,
       priority: 1,
       subject: 'CARS',
@@ -182,24 +196,33 @@ function generateQuestionTasks(date) {
     {
       type: 'Anki',
       title: 'Anki due cards + cards from meaningful misses',
-      description:
-        'Prioritize due cards and high-value cards generated from question review.',
+      description: 'Prioritize due cards and cards created from question review.',
       resource: 'Anki',
-      minutes: Number(phase.anki_minutes) || 30,
+      minutes: Number(phase.anki_minutes) || 40,
       priority: 2,
       subject: 'Mixed',
       topic: 'Retention',
     },
     {
       type: 'Content',
-      title: `Targeted repair from today's ${subject} weaknesses`,
+      title: `Targeted ${subject} content repair`,
       description:
-        'Use content review only to repair concepts exposed by questions.',
-      resource: 'Targeted Repair',
-      minutes: Number(phase.targeted_repair_minutes) || 30,
+        'Repair only concepts exposed by questions. Avoid another passive full content pass.',
+      resource: 'Kaplan / Notes',
+      minutes: Number(phase.targeted_repair_minutes) || 40,
       priority: 2,
       subject,
       topic: 'Weakness Repair',
+    },
+    {
+      type: 'Recall',
+      title: 'Closed-book recall',
+      description: 'Write or say the major concepts from today without looking at notes.',
+      resource: 'Active Recall',
+      minutes: 20,
+      priority: 2,
+      subject,
+      topic: 'Recall',
     },
   ]
 }
@@ -219,7 +242,6 @@ export default function Home() {
   const [selectedDate, setSelectedDate] = useState(localISO())
 
   const [tasks, setTasks] = useState([])
-  const [studyDays, setStudyDays] = useState([])
   const [questionLogs, setQuestionLogs] = useState([])
   const [fullLengths, setFullLengths] = useState([])
   const [studySessions, setStudySessions] = useState([])
@@ -240,156 +262,118 @@ export default function Home() {
   const uid = session?.user?.id
   const today = localISO()
 
-  const studyTrack = preferences?.study_track || 'questions'
+  const selectedPhase = useMemo(() => getPhase(selectedDate), [selectedDate])
 
-  const displayName =
-    preferences?.display_name ||
-    session?.user?.email?.split('@')[0] ||
-    'Student'
-
-  const selectedPhase = useMemo(
-    () => getPhase(selectedDate),
-    [selectedDate]
+  const v2Tasks = useMemo(
+    () =>
+      tasks.filter(
+        task =>
+          task.source_type === 'v2_engine' &&
+          task.task_date >= PLAN_START
+      ),
+    [tasks]
   )
 
   const selectedTasks = useMemo(
-    () => tasks.filter((task) => task.task_date === selectedDate),
-    [tasks, selectedDate]
+    () => v2Tasks.filter(task => task.task_date === selectedDate),
+    [v2Tasks, selectedDate]
   )
 
   const selectedDueTasks = useMemo(
     () =>
-      tasks.filter(
-        (task) =>
+      v2Tasks.filter(
+        task =>
           task.task_date === selectedDate &&
           (task.current_due_date || task.task_date) === selectedDate
       ),
-    [tasks, selectedDate]
+    [v2Tasks, selectedDate]
   )
 
   const selectedOverflow = useMemo(
     () =>
-      tasks.filter(
-        (task) =>
+      v2Tasks.filter(
+        task =>
           !task.completed &&
           task.task_date < selectedDate &&
           (task.current_due_date || task.task_date) === selectedDate
       ),
-    [tasks, selectedDate]
+    [v2Tasks, selectedDate]
   )
 
   const currentOverflow = useMemo(
     () =>
-      tasks.filter(
-        (task) =>
+      v2Tasks.filter(
+        task =>
           !task.completed &&
+          task.task_date >= PLAN_START &&
           task.task_date < today &&
           task.task_type !== 'Exam'
       ),
-    [tasks, today]
+    [v2Tasks, today]
   )
 
-  const overflowMinutes = useMemo(
-    () =>
-      currentOverflow.reduce(
-        (sum, task) =>
-          sum + (Number(task.estimated_minutes) || 0),
-        0
-      ),
-    [currentOverflow]
+  const overflowMinutes = currentOverflow.reduce(
+    (sum, task) => sum + (Number(task.estimated_minutes) || 0),
+    0
   )
+
+  const overflowLimit = Number(preferences?.overflow_limit_minutes) || 180
 
   const overflowLevel =
-    overflowMinutes >= config.global_rules.overflow_critical_minutes
+    overflowMinutes >= overflowLimit
       ? 'critical'
-      : overflowMinutes >=
-        config.global_rules.overflow_warning_minutes
-      ? 'warning'
       : overflowMinutes > 0
-      ? 'active'
+      ? 'warning'
       : 'clear'
 
-  const selectedCompleted = selectedTasks.filter(
-    (task) => task.completed
-  ).length
+  const selectedCompleted = selectedTasks.filter(task => task.completed).length
 
   const selectedProgress = selectedTasks.length
-    ? Math.round(
-        (selectedCompleted / selectedTasks.length) * 100
-      )
+    ? Math.round((selectedCompleted / selectedTasks.length) * 100)
     : 0
 
   const selectedPlannedMinutes = [
     ...selectedDueTasks,
     ...selectedOverflow,
   ].reduce(
-    (sum, task) =>
-      sum + (Number(task.estimated_minutes) || 0),
+    (sum, task) => sum + (Number(task.estimated_minutes) || 0),
     0
   )
 
   const selectedFocusedMinutes = studySessions
-    .filter((item) => item.session_date === selectedDate)
-    .reduce(
-      (sum, item) =>
-        sum + (Number(item.actual_minutes) || 0),
-      0
-    )
+    .filter(item => item.session_date === selectedDate)
+    .reduce((sum, item) => sum + (Number(item.actual_minutes) || 0), 0)
 
-  const weekDates = useMemo(
-    () => getWeekDates(selectedDate),
-    [selectedDate]
-  )
+  const weekDates = useMemo(() => getWeekDates(selectedDate), [selectedDate])
 
-  const weekTasks = tasks.filter((task) =>
-    weekDates.includes(task.task_date)
-  )
-
-  const weekCompleted = weekTasks.filter(
-    (task) => task.completed
-  ).length
+  const weekTasks = v2Tasks.filter(task => weekDates.includes(task.task_date))
+  const weekCompleted = weekTasks.filter(task => task.completed).length
 
   const weekQuestions = questionLogs
-    .filter((log) => weekDates.includes(log.question_date))
-    .reduce(
-      (sum, log) =>
-        sum + (Number(log.total_questions) || 0),
-      0
-    )
+    .filter(log => weekDates.includes(log.question_date))
+    .reduce((sum, log) => sum + (Number(log.total_questions) || 0), 0)
 
   const weekFocusedMinutes = studySessions
-    .filter((item) => weekDates.includes(item.session_date))
-    .reduce(
-      (sum, item) =>
-        sum + (Number(item.actual_minutes) || 0),
-      0
-    )
+    .filter(item => weekDates.includes(item.session_date))
+    .reduce((sum, item) => sum + (Number(item.actual_minutes) || 0), 0)
 
   const activeChapter =
-    chapters.find(
-      (chapter) => chapter.status === 'in_progress'
-    ) ||
-    chapters.find(
-      (chapter) => chapter.status === 'not_started'
-    ) ||
+    chapters.find(chapter => chapter.status === 'in_progress') ||
+    chapters.find(chapter => chapter.status === 'not_started') ||
     null
 
   const completedChapters = chapters.filter(
-    (chapter) => chapter.status === 'completed'
+    chapter => chapter.status === 'completed'
   ).length
 
   const countdown = Math.max(
     0,
-    Math.ceil(
-      (dateFromISO(EXAM_DATE) - new Date()) / 86400000
-    )
+    Math.ceil((dateFromISO(EXAM_DATE) - new Date()) / 86400000)
   )
 
   useEffect(() => {
     if (!supabase) {
-      setMessage(
-        'Supabase environment variables are missing.'
-      )
+      setMessage('Supabase environment variables are missing.')
       setLoading(false)
       return
     }
@@ -404,9 +388,7 @@ export default function Home() {
 
       if (!mounted) return
 
-      if (error) {
-        setMessage(error.message)
-      }
+      if (error) setMessage(error.message)
 
       setSession(currentSession)
       setLoading(false)
@@ -416,13 +398,9 @@ export default function Home() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      (_event, newSession) => {
-        if (mounted) {
-          setSession(newSession)
-        }
-      }
-    )
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (mounted) setSession(newSession)
+    })
 
     return () => {
       mounted = false
@@ -439,20 +417,22 @@ export default function Home() {
       setInitializing(true)
 
       try {
-        await initializeV2()
+        const profile = await ensurePreferences()
+        await seedContentProgress()
+
+        if (!profile || profile.study_track === 'questions') {
+          await seedDiyaSchedule()
+        }
+
+        await processOverflow()
+        await loadAll()
       } catch (error) {
         console.error(error)
-
         if (!cancelled) {
-          setMessage(
-            error?.message ||
-              'The tracker could not finish loading.'
-          )
+          setMessage(error?.message || 'The tracker could not finish loading.')
         }
       } finally {
-        if (!cancelled) {
-          setInitializing(false)
-        }
+        if (!cancelled) setInitializing(false)
       }
     }
 
@@ -468,9 +448,7 @@ export default function Home() {
           table: 'daily_tasks',
           filter: `user_id=eq.${uid}`,
         },
-        () => {
-          loadAll()
-        }
+        () => loadAll()
       )
       .subscribe()
 
@@ -484,55 +462,23 @@ export default function Home() {
     if (!timerRunning) return
 
     timerRef.current = setInterval(() => {
-      setTimerSeconds((current) => {
-        if (current > 1) {
-          return current - 1
-        }
+      setTimerSeconds(current => {
+        if (current > 1) return current - 1
 
         clearInterval(timerRef.current)
         setTimerRunning(false)
 
-        if (timerMode === 'Focus') {
-          logSession(focusMinutes)
-        }
+        if (timerMode === 'Focus') logSession(focusMinutes)
 
-        const nextMode =
-          timerMode === 'Focus' ? 'Break' : 'Focus'
-
+        const nextMode = timerMode === 'Focus' ? 'Break' : 'Focus'
         setTimerMode(nextMode)
 
-        return (
-          (nextMode === 'Focus'
-            ? focusMinutes
-            : breakMinutes) * 60
-        )
+        return (nextMode === 'Focus' ? focusMinutes : breakMinutes) * 60
       })
     }, 1000)
 
-    return () => {
-      clearInterval(timerRef.current)
-    }
-  }, [
-    timerRunning,
-    timerMode,
-    focusMinutes,
-    breakMinutes,
-  ])
-
-  async function initializeV2() {
-    const profile = await ensurePreferences()
-
-    await seedContentProgress()
-
-    // Only the question-track account needs the generated
-    // question schedule.
-    if (!profile || profile.study_track === 'questions') {
-      await seedQuestionSchedule()
-    }
-
-    await processOverflow()
-    await loadAll()
-  }
+    return () => clearInterval(timerRef.current)
+  }, [timerRunning, timerMode, focusMinutes, breakMinutes])
 
   async function ensurePreferences() {
     const { data, error } = await supabase
@@ -541,37 +487,51 @@ export default function Home() {
       .eq('user_id', uid)
       .maybeSingle()
 
-    if (error) {
-      throw error
-    }
+    if (error) throw error
 
     if (data) {
       setPreferences(data)
+
+      if (data.display_name !== DIYA.name) {
+        const { data: updated, error: updateError } = await supabase
+          .from('study_preferences')
+          .update({
+            display_name: DIYA.name,
+            study_track: 'questions',
+            target_score: 512,
+            exam_date: EXAM_DATE,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', uid)
+          .select()
+          .single()
+
+        if (updateError) throw updateError
+
+        setPreferences(updated)
+        return updated
+      }
+
       return data
     }
 
-    const { data: created, error: createError } =
-      await supabase
-        .from('study_preferences')
-        .insert({
-          user_id: uid,
-          display_name:
-            session?.user?.email?.split('@')[0] ||
-            'Student',
-          study_track: 'questions',
-          target_score: 512,
-          exam_date: EXAM_DATE,
-          daily_question_target: 60,
-          daily_cars_target: 3,
-          overflow_enabled: true,
-          overflow_limit_minutes: 180,
-        })
-        .select()
-        .single()
+    const { data: created, error: createError } = await supabase
+      .from('study_preferences')
+      .insert({
+        user_id: uid,
+        display_name: DIYA.name,
+        study_track: 'questions',
+        target_score: 512,
+        exam_date: EXAM_DATE,
+        daily_question_target: 60,
+        daily_cars_target: 3,
+        overflow_enabled: true,
+        overflow_limit_minutes: 180,
+      })
+      .select()
+      .single()
 
-    if (createError) {
-      throw createError
-    }
+    if (createError) throw createError
 
     setPreferences(created)
     return created
@@ -580,146 +540,112 @@ export default function Home() {
   async function seedContentProgress() {
     const { count, error } = await supabase
       .from('content_progress')
-      .select('id', {
-        count: 'exact',
-        head: true,
-      })
+      .select('id', { count: 'exact', head: true })
       .eq('user_id', uid)
 
-    if (error) {
-      throw error
-    }
-
+    if (error) throw error
     if ((count || 0) > 0) return
 
-    const rows = config.friend.chapters.map(
-      (chapter) => ({
-        user_id: uid,
-        sequence_number: chapter.sequence,
-        subject: chapter.subject,
-        chapter_number: chapter.chapter,
-        chapter_title: chapter.title,
-        status: 'not_started',
-        concept_checks_completed: false,
-        chapter_questions_completed: false,
-        recall_completed: false,
-        practice_completed: false,
-      })
-    )
+    const rows = (config.friend?.chapters || []).map(chapter => ({
+      user_id: uid,
+      sequence_number: chapter.sequence,
+      subject: chapter.subject,
+      chapter_number: chapter.chapter,
+      chapter_title: chapter.title,
+      status: 'not_started',
+      concept_checks_completed: false,
+      chapter_questions_completed: false,
+      recall_completed: false,
+      practice_completed: false,
+    }))
+
+    if (!rows.length) return
 
     const { error: insertError } = await supabase
       .from('content_progress')
       .insert(rows)
 
-    if (insertError) {
-      throw insertError
-    }
+    if (insertError) throw insertError
   }
 
-  async function seedQuestionSchedule() {
+  async function seedDiyaSchedule() {
     const { data: existing, error } = await supabase
       .from('daily_tasks')
       .select('id, task_date, source_type')
       .eq('user_id', uid)
+      .eq('source_type', 'v2_engine')
       .gte('task_date', PLAN_START)
       .lte('task_date', EXAM_DATE)
 
-    if (error) {
-      throw error
-    }
+    if (error) throw error
 
-    const seededDates = new Set(
-      (existing || [])
-        .filter(
-          (task) => task.source_type === 'v2_engine'
-        )
-        .map((task) => task.task_date)
-    )
+    const seededDates = new Set((existing || []).map(task => task.task_date))
 
     let date = PLAN_START
 
     while (date <= EXAM_DATE) {
       if (!seededDates.has(date)) {
-        const generatedTasks =
-          generateQuestionTasks(date)
+        const generatedTasks = generateDiyaTasks(date)
 
         if (generatedTasks.length) {
-          let { data: studyDay, error: dayError } =
-            await supabase
-              .from('study_days')
-              .select('*')
-              .eq('user_id', uid)
-              .eq('study_date', date)
-              .maybeSingle()
+          let { data: studyDay, error: dayError } = await supabase
+            .from('study_days')
+            .select('*')
+            .eq('user_id', uid)
+            .eq('study_date', date)
+            .maybeSingle()
 
-          if (dayError) {
-            throw dayError
-          }
+          if (dayError) throw dayError
 
           if (!studyDay) {
             const phase = getPhase(date)
 
-            const {
-              data: newStudyDay,
-              error: createDayError,
-            } = await supabase
+            const { data: newStudyDay, error: createDayError } = await supabase
               .from('study_days')
               .insert({
                 user_id: uid,
                 study_date: date,
-                phase:
-                  phase?.name || 'MCAT Study',
+                phase: phase?.name || 'MCAT Study',
                 planned_hours:
-                  generatedTasks.reduce(
-                    (sum, task) =>
-                      sum + task.minutes,
-                    0
-                  ) / 60,
+                  generatedTasks.reduce((sum, task) => sum + task.minutes, 0) /
+                  60,
                 is_rest_day: false,
                 is_full_length_day: false,
               })
               .select()
               .single()
 
-            if (createDayError) {
-              throw createDayError
-            }
-
+            if (createDayError) throw createDayError
             studyDay = newStudyDay
           }
 
-          const rows = generatedTasks.map(
-            (task, index) => ({
-              user_id: uid,
-              study_day_id: studyDay.id,
-              task_date: date,
-              current_due_date: date,
-              task_type: task.type,
-              title: task.title,
-              description: task.description,
-              resource: task.resource,
-              estimated_minutes: task.minutes,
-              sort_order: index + 1,
-              completed: false,
-              completed_at: null,
-              carried_forward: false,
-              carry_count: 0,
-              priority: task.priority,
-              task_status: 'scheduled',
-              source_type: 'v2_engine',
-              subject: task.subject,
-              topic: task.topic,
-            })
-          )
+          const rows = generatedTasks.map((task, index) => ({
+            user_id: uid,
+            study_day_id: studyDay.id,
+            task_date: date,
+            current_due_date: date,
+            task_type: task.type,
+            title: task.title,
+            description: task.description,
+            resource: task.resource,
+            estimated_minutes: task.minutes,
+            sort_order: index + 1,
+            completed: false,
+            completed_at: null,
+            carried_forward: false,
+            carry_count: 0,
+            priority: task.priority,
+            task_status: 'scheduled',
+            source_type: 'v2_engine',
+            subject: task.subject,
+            topic: task.topic,
+          }))
 
-          const { error: taskError } =
-            await supabase
-              .from('daily_tasks')
-              .insert(rows)
+          const { error: taskError } = await supabase
+            .from('daily_tasks')
+            .insert(rows)
 
-          if (taskError) {
-            throw taskError
-          }
+          if (taskError) throw taskError
         }
       }
 
@@ -728,47 +654,39 @@ export default function Home() {
   }
 
   async function processOverflow() {
-    if (today >= EXAM_DATE) return
+    if (today <= PLAN_START || today >= EXAM_DATE) return
 
-const { data: overdue, error } = await supabase
-  .from('daily_tasks')
-  .select('*')
-  .eq('user_id', uid)
-  .eq('completed', false)
-  .eq('source_type', 'v2_engine')
-  .gte('task_date', PLAN_START)
-  .lt('task_date', today)
-  .neq('task_type', 'Exam')
-    
-    if (error) {
-      throw error
-    }
+    const { data: overdue, error } = await supabase
+      .from('daily_tasks')
+      .select('*')
+      .eq('user_id', uid)
+      .eq('source_type', 'v2_engine')
+      .eq('completed', false)
+      .gte('task_date', PLAN_START)
+      .lt('task_date', today)
+      .neq('task_type', 'Exam')
+
+    if (error) throw error
 
     for (const task of overdue || []) {
-      const oldDue =
-        task.current_due_date || task.task_date
+      const oldDue = task.current_due_date || task.task_date
+      const additionalCarry = oldDue < today ? 1 : 0
 
-      const additionalCarry =
-        oldDue < today ? 1 : 0
+      const { error: updateError } = await supabase
+        .from('daily_tasks')
+        .update({
+          current_due_date: today,
+          carried_forward: true,
+          carry_count: Math.max(
+            1,
+            Number(task.carry_count || 0) + additionalCarry
+          ),
+          task_status: 'overdue',
+        })
+        .eq('id', task.id)
+        .eq('user_id', uid)
 
-      const { error: updateError } =
-        await supabase
-          .from('daily_tasks')
-          .update({
-            current_due_date: today,
-            carried_forward: true,
-            carry_count: Math.max(
-              1,
-              Number(task.carry_count || 0) +
-                additionalCarry
-            ),
-            task_status: 'overdue',
-          })
-          .eq('id', task.id)
-
-      if (updateError) {
-        throw updateError
-      }
+      if (updateError) throw updateError
     }
   }
 
@@ -777,7 +695,6 @@ const { data: overdue, error } = await supabase
 
     const [
       taskResult,
-      dayResult,
       questionResult,
       flResult,
       sessionResult,
@@ -795,35 +712,23 @@ const { data: overdue, error } = await supabase
         .order('sort_order'),
 
       supabase
-        .from('study_days')
-        .select('*')
-        .eq('user_id', uid)
-        .order('study_date'),
-
-      supabase
         .from('question_blocks')
         .select('*')
         .eq('user_id', uid)
-        .order('question_date', {
-          ascending: false,
-        })
+        .order('question_date', { ascending: false })
         .limit(200),
 
       supabase
         .from('full_length_scores')
         .select('*')
         .eq('user_id', uid)
-        .order('exam_date', {
-          ascending: false,
-        }),
+        .order('exam_date', { ascending: false }),
 
       supabase
         .from('study_sessions')
         .select('*')
         .eq('user_id', uid)
-        .order('session_date', {
-          ascending: false,
-        })
+        .order('session_date', { ascending: false })
         .limit(500),
 
       supabase
@@ -842,28 +747,21 @@ const { data: overdue, error } = await supabase
         .from('weaknesses')
         .select('*')
         .eq('user_id', uid)
-        .order('last_seen', {
-          ascending: false,
-        }),
+        .order('last_seen', { ascending: false }),
 
       supabase
         .from('study_partners')
         .select('*')
-        .or(
-          `user_id.eq.${uid},partner_user_id.eq.${uid}`
-        ),
+        .or(`user_id.eq.${uid},partner_user_id.eq.${uid}`),
 
       supabase
         .from('shared_study_sessions')
         .select('*')
-        .order('session_date', {
-          ascending: false,
-        }),
+        .order('session_date', { ascending: false }),
     ])
 
     const results = [
       taskResult,
-      dayResult,
       questionResult,
       flResult,
       sessionResult,
@@ -874,16 +772,10 @@ const { data: overdue, error } = await supabase
       sharedResult,
     ]
 
-    const failed = results.find(
-      (result) => result.error
-    )
-
-    if (failed?.error) {
-      throw failed.error
-    }
+    const failed = results.find(result => result.error)
+    if (failed?.error) throw failed.error
 
     setTasks(taskResult.data || [])
-    setStudyDays(dayResult.data || [])
     setQuestionLogs(questionResult.data || [])
     setFullLengths(flResult.data || [])
     setStudySessions(sessionResult.data || [])
@@ -904,11 +796,10 @@ const { data: overdue, error } = await supabase
 
     try {
       if (authMode === 'signin') {
-        const { data, error } =
-          await supabase.auth.signInWithPassword({
-            email: email.trim(),
-            password,
-          })
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        })
 
         if (error) {
           setMessage(error.message)
@@ -916,44 +807,35 @@ const { data: overdue, error } = await supabase
         }
 
         if (!data.session) {
-          setMessage(
-            'Sign in succeeded but no session was returned.'
-          )
+          setMessage('Sign in succeeded but no session was returned.')
           return
         }
 
         setSession(data.session)
         setEmail('')
         setPassword('')
-        return
-      }
-
-      const { data, error } =
-        await supabase.auth.signUp({
+      } else {
+        const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
         })
 
-      if (error) {
-        setMessage(error.message)
-        return
-      }
+        if (error) {
+          setMessage(error.message)
+          return
+        }
 
-      if (data.session) {
-        setSession(data.session)
-        setMessage('')
-      } else {
-        setMessage(
-          'Account created. Check your email to confirm the account, then sign in.'
-        )
+        if (data.session) {
+          setSession(data.session)
+        } else {
+          setMessage(
+            'Account created. Check your email to confirm the account, then sign in.'
+          )
+        }
       }
     } catch (error) {
-      console.error('Authentication error:', error)
-
-      setMessage(
-        error?.message ||
-          'Authentication failed. Please try again.'
-      )
+      console.error(error)
+      setMessage(error?.message || 'Authentication failed.')
     } finally {
       setAuthBusy(false)
     }
@@ -961,16 +843,7 @@ const { data: overdue, error } = await supabase
 
   async function signOut() {
     const { error } = await supabase.auth.signOut()
-
-    if (error) {
-      setMessage(error.message)
-      return
-    }
-
-    setSession(null)
-    setPreferences(null)
-    setTasks([])
-    setChapters([])
+    if (error) setMessage(error.message)
   }
 
   async function toggleTask(task) {
@@ -978,9 +851,7 @@ const { data: overdue, error } = await supabase
 
     const payload = {
       completed,
-      completed_at: completed
-        ? new Date().toISOString()
-        : null,
+      completed_at: completed ? new Date().toISOString() : null,
       task_status: completed
         ? task.carried_forward
           ? 'completed_late'
@@ -1001,104 +872,22 @@ const { data: overdue, error } = await supabase
       return
     }
 
-    setTasks((current) =>
-      current.map((item) =>
-        item.id === task.id
-          ? { ...item, ...payload }
-          : item
+    setTasks(current =>
+      current.map(item =>
+        item.id === task.id ? { ...item, ...payload } : item
       )
     )
-  }
-
-  async function changeStudyTrack(newTrack) {
-    setMessage('')
-
-    const { error } = await supabase
-      .from('study_preferences')
-      .update({
-        study_track: newTrack,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('user_id', uid)
-
-    if (error) {
-      setMessage(error.message)
-      return
-    }
-
-    setPreferences((current) => ({
-      ...current,
-      study_track: newTrack,
-    }))
-
-    if (newTrack === 'questions') {
-      setMessage(
-        'Question Track selected. Refresh once if the schedule does not appear immediately.'
-      )
-      await seedQuestionSchedule()
-      await loadAll()
-    } else {
-      setMessage('Content Track selected.')
-    }
-  }
-
-  async function updateDisplayName(event) {
-    event.preventDefault()
-
-    const form = new FormData(event.currentTarget)
-    const name = String(
-      form.get('name') || ''
-    ).trim()
-
-    if (!name) return
-
-    const { error } = await supabase
-      .from('study_preferences')
-      .update({
-        display_name: name,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('user_id', uid)
-
-    if (error) {
-      setMessage(error.message)
-      return
-    }
-
-    setPreferences((current) => ({
-      ...current,
-      display_name: name,
-    }))
-
-    setMessage('Profile updated.')
   }
 
   async function startChapter(chapter) {
-    const alreadyActive = chapters.find(
-      (item) => item.status === 'in_progress'
-    )
-
-    if (
-      alreadyActive &&
-      alreadyActive.id !== chapter.id
-    ) {
-      setMessage(
-        `Finish ${alreadyActive.subject} Chapter ${alreadyActive.chapter_number} first.`
-      )
-      return
-    }
-
     const earlierIncomplete = chapters.find(
-      (item) =>
-        item.sequence_number <
-          chapter.sequence_number &&
+      item =>
+        item.sequence_number < chapter.sequence_number &&
         item.status !== 'completed'
     )
 
     if (earlierIncomplete) {
-      setMessage(
-        `Complete sequence ${earlierIncomplete.sequence_number} first.`
-      )
+      setMessage(`Complete sequence ${earlierIncomplete.sequence_number} first.`)
       return
     }
 
@@ -1106,9 +895,7 @@ const { data: overdue, error } = await supabase
       .from('content_progress')
       .update({
         status: 'in_progress',
-        started_at:
-          chapter.started_at ||
-          new Date().toISOString(),
+        started_at: chapter.started_at || new Date().toISOString(),
       })
       .eq('id', chapter.id)
       .eq('user_id', uid)
@@ -1121,17 +908,12 @@ const { data: overdue, error } = await supabase
     await loadAll()
   }
 
-  async function toggleChapterItem(
-    chapter,
-    field
-  ) {
+  async function toggleChapterItem(chapter, field) {
     const value = !chapter[field]
 
     const { error } = await supabase
       .from('content_progress')
-      .update({
-        [field]: value,
-      })
+      .update({ [field]: value })
       .eq('id', chapter.id)
       .eq('user_id', uid)
 
@@ -1140,11 +922,9 @@ const { data: overdue, error } = await supabase
       return
     }
 
-    setChapters((current) =>
-      current.map((item) =>
-        item.id === chapter.id
-          ? { ...item, [field]: value }
-          : item
+    setChapters(current =>
+      current.map(item =>
+        item.id === chapter.id ? { ...item, [field]: value } : item
       )
     )
   }
@@ -1158,7 +938,7 @@ const { data: overdue, error } = await supabase
 
     if (!ready) {
       setMessage(
-        'Complete the concept checks, chapter questions, closed-book recall, and related practice first.'
+        'Complete the chapter reading/concept checks, chapter questions, recall, and related practice first.'
       )
       return
     }
@@ -1177,10 +957,6 @@ const { data: overdue, error } = await supabase
       return
     }
 
-    setMessage(
-      `${chapter.subject} Chapter ${chapter.chapter_number} completed.`
-    )
-
     await loadAll()
   }
 
@@ -1194,23 +970,19 @@ const { data: overdue, error } = await supabase
     const correct = Number(form.get('correct'))
 
     if (correct > total) {
-      setMessage(
-        'Correct answers cannot be greater than total questions.'
-      )
+      setMessage('Correct answers cannot be greater than total questions.')
       return
     }
 
-    const { error } = await supabase
-      .from('question_blocks')
-      .insert({
-        user_id: uid,
-        question_date: form.get('date'),
-        source: form.get('source'),
-        subject: form.get('subject'),
-        total_questions: total,
-        correct_questions: correct,
-        timed: form.get('timed') === 'on',
-      })
+    const { error } = await supabase.from('question_blocks').insert({
+      user_id: uid,
+      question_date: form.get('date'),
+      source: form.get('source'),
+      subject: form.get('subject'),
+      total_questions: total,
+      correct_questions: correct,
+      timed: form.get('timed') === 'on',
+    })
 
     if (error) {
       setMessage(error.message)
@@ -1218,7 +990,6 @@ const { data: overdue, error } = await supabase
     }
 
     formElement.reset()
-    setMessage('Question block logged.')
     await loadAll()
   }
 
@@ -1228,23 +999,20 @@ const { data: overdue, error } = await supabase
     const formElement = event.currentTarget
     const form = new FormData(formElement)
 
-    const { error } = await supabase
-      .from('weaknesses')
-      .insert({
-        user_id: uid,
-        section: form.get('section'),
-        subject: form.get('subject'),
-        topic: form.get('topic'),
-        subtopic:
-          form.get('subtopic') || null,
-        times_missed: 1,
-        times_correct: 0,
-        mastery_level: 'red',
-        first_seen: today,
-        last_seen: today,
-        retest_date: addDays(today, 3),
-        notes: form.get('notes') || null,
-      })
+    const { error } = await supabase.from('weaknesses').insert({
+      user_id: uid,
+      section: form.get('section'),
+      subject: form.get('subject'),
+      topic: form.get('topic'),
+      subtopic: form.get('subtopic') || null,
+      times_missed: 1,
+      times_correct: 0,
+      mastery_level: 'red',
+      first_seen: today,
+      last_seen: today,
+      retest_date: addDays(today, 3),
+      notes: form.get('notes') || null,
+    })
 
     if (error) {
       setMessage(error.message)
@@ -1252,16 +1020,10 @@ const { data: overdue, error } = await supabase
     }
 
     formElement.reset()
-    setMessage(
-      'Weakness added. Initial retest scheduled in 3 days.'
-    )
     await loadAll()
   }
 
-  async function updateMastery(
-    weakness,
-    level
-  ) {
+  async function updateMastery(weakness, level) {
     const retestDate =
       level === 'green'
         ? addDays(today, 14)
@@ -1299,18 +1061,16 @@ const { data: overdue, error } = await supabase
     const bb = Number(form.get('bb'))
     const ps = Number(form.get('ps'))
 
-    const { error } = await supabase
-      .from('full_length_scores')
-      .insert({
-        user_id: uid,
-        exam_date: form.get('date'),
-        exam_name: form.get('name'),
-        cp_score: cp,
-        cars_score: cars,
-        bb_score: bb,
-        ps_score: ps,
-        total_score: cp + cars + bb + ps,
-      })
+    const { error } = await supabase.from('full_length_scores').insert({
+      user_id: uid,
+      exam_date: form.get('date'),
+      exam_name: form.get('name'),
+      cp_score: cp,
+      cars_score: cars,
+      bb_score: bb,
+      ps_score: ps,
+      total_score: cp + cars + bb + ps,
+    })
 
     if (error) {
       setMessage(error.message)
@@ -1318,128 +1078,39 @@ const { data: overdue, error } = await supabase
     }
 
     formElement.reset()
-    setMessage('Full-length score saved.')
     await loadAll()
   }
 
   async function logSession(minutes) {
     if (!uid || !minutes) return
 
-    const { error } = await supabase
-      .from('study_sessions')
-      .insert({
-        user_id: uid,
-        session_date: localISO(),
-        actual_minutes: minutes,
-        planned_minutes: minutes,
-        session_type: 'Pomodoro',
-        ended_at: new Date().toISOString(),
-      })
+    const { error } = await supabase.from('study_sessions').insert({
+      user_id: uid,
+      session_date: localISO(),
+      actual_minutes: minutes,
+      planned_minutes: minutes,
+      session_type: 'Pomodoro',
+      ended_at: new Date().toISOString(),
+    })
 
     if (error) {
       setMessage(error.message)
       return
     }
 
-    await loadAll()
-  }
-
-  async function invitePartner(event) {
-    event.preventDefault()
-
-    const formElement = event.currentTarget
-    const form = new FormData(formElement)
-
-    const inviteEmail = String(
-      form.get('email') || ''
-    )
-      .trim()
-      .toLowerCase()
-
-    if (!inviteEmail) return
-
-    const { error } = await supabase
-      .from('study_partners')
-      .insert({
-        user_id: uid,
-        invite_email: inviteEmail,
-        status: 'pending',
-      })
-
-    if (error) {
-      setMessage(error.message)
-      return
-    }
-
-    formElement.reset()
-
-    setMessage(
-      'Partner invitation saved. Your friend should create their own tracker account with that email.'
-    )
-
-    await loadAll()
-  }
-
-  async function addSharedSession(event) {
-    event.preventDefault()
-
-    const formElement = event.currentTarget
-    const form = new FormData(formElement)
-
-    const { data, error } = await supabase
-      .from('shared_study_sessions')
-      .insert({
-        created_by: uid,
-        session_date: form.get('date'),
-        title: form.get('title'),
-        session_type: form.get('type'),
-        planned_minutes: Number(
-          form.get('minutes')
-        ),
-        completed: false,
-      })
-      .select()
-      .single()
-
-    if (error) {
-      setMessage(error.message)
-      return
-    }
-
-    const { error: memberError } =
-      await supabase
-        .from('shared_session_members')
-        .insert({
-          session_id: data.id,
-          user_id: uid,
-        })
-
-    if (memberError) {
-      setMessage(memberError.message)
-      return
-    }
-
-    formElement.reset()
-    setMessage('Shared study session created.')
     await loadAll()
   }
 
   function resetTimer(mode) {
     setTimerRunning(false)
     setTimerMode(mode)
-    setTimerSeconds(
-      (mode === 'Focus'
-        ? focusMinutes
-        : breakMinutes) * 60
-    )
+    setTimerSeconds((mode === 'Focus' ? focusMinutes : breakMinutes) * 60)
   }
 
   if (loading) {
     return (
       <main className="auth">
-        <div className="card">
-          Loading MCAT Study Tracker…
-        </div>
+        <div className="card">Loading MCAT Study Tracker…</div>
       </main>
     )
   }
@@ -1447,57 +1118,35 @@ const { data: overdue, error } = await supabase
   if (!session) {
     return (
       <main className="auth">
-        <form
-          className="card authCard"
-          onSubmit={handleAuth}
-        >
+        <form className="card authCard" onSubmit={handleAuth}>
           <div className="logo">
             <span>λ</span>
-
             <div>
               <b>MCAT</b>
               <small>STUDY TRACKER V2</small>
             </div>
           </div>
 
-          <h1>
-            {authMode === 'signin'
-              ? 'Welcome back'
-              : 'Create account'}
-          </h1>
-
+          <h1>{authMode === 'signin' ? 'Welcome back' : 'Create account'}</h1>
           <p>January 21, 2027</p>
 
           <input
             type="email"
             placeholder="Email"
-            autoComplete="email"
             value={email}
-            onChange={(event) =>
-              setEmail(event.target.value)
-            }
+            onChange={event => setEmail(event.target.value)}
             required
           />
 
           <input
             type="password"
             placeholder="Password"
-            autoComplete={
-              authMode === 'signin'
-                ? 'current-password'
-                : 'new-password'
-            }
             value={password}
-            onChange={(event) =>
-              setPassword(event.target.value)
-            }
+            onChange={event => setPassword(event.target.value)}
             required
           />
 
-          <button
-            type="submit"
-            disabled={authBusy}
-          >
+          <button type="submit" disabled={authBusy}>
             {authBusy
               ? 'Please wait…'
               : authMode === 'signin'
@@ -1510,10 +1159,8 @@ const { data: overdue, error } = await supabase
             className="secondary"
             onClick={() => {
               setMessage('')
-              setAuthMode((current) =>
-                current === 'signin'
-                  ? 'signup'
-                  : 'signin'
+              setAuthMode(current =>
+                current === 'signin' ? 'signup' : 'signin'
               )
             }}
           >
@@ -1522,11 +1169,7 @@ const { data: overdue, error } = await supabase
               : 'Already have an account? Sign in'}
           </button>
 
-          {message && (
-            <div className="message">
-              {message}
-            </div>
-          )}
+          {message && <div className="message">{message}</div>}
         </form>
       </main>
     )
@@ -1536,12 +1179,10 @@ const { data: overdue, error } = await supabase
     'Today',
     'Calendar',
     'Questions',
-    'Content',
     'Weaknesses',
     'Full Lengths',
     'Together',
     'Analytics',
-    'Settings',
   ]
 
   return (
@@ -1549,7 +1190,6 @@ const { data: overdue, error } = await supabase
       <aside className="aside">
         <div className="logo">
           <span>λ</span>
-
           <div>
             <b>MCAT</b>
             <small>STUDY TRACKER V2</small>
@@ -1557,22 +1197,16 @@ const { data: overdue, error } = await supabase
         </div>
 
         <div className="profileMini">
-          <small>STUDYING AS</small>
-          <b>{displayName}</b>
-          <span>
-            {studyTrack === 'questions'
-              ? 'Question Track'
-              : 'Content Track'}
-          </span>
+          <small>STUDY TEAM</small>
+          <b>Diya + Hamzah</b>
+          <span>January 21, 2027</span>
         </div>
 
         <nav>
-          {navItems.map((item) => (
+          {navItems.map(item => (
             <button
               key={item}
-              className={
-                tab === item ? 'active' : ''
-              }
+              className={tab === item ? 'active' : ''}
               onClick={() => setTab(item)}
             >
               {item}
@@ -1586,10 +1220,7 @@ const { data: overdue, error } = await supabase
           <span>2027</span>
         </div>
 
-        <button
-          className="secondary"
-          onClick={signOut}
-        >
+        <button className="secondary" onClick={signOut}>
           Sign out
         </button>
       </aside>
@@ -1598,28 +1229,14 @@ const { data: overdue, error } = await supabase
         <header className="header">
           <div>
             <h1>{tab}</h1>
-
-            <p>
-              {studyTrack === 'questions'
-                ? selectedPhase?.name ||
-                  'MCAT preparation'
-                : activeChapter
-                ? `${activeChapter.subject} • Chapter ${activeChapter.chapter_number}`
-                : 'Kaplan Content Review'}
-            </p>
+            <p>Diya + Hamzah MCAT preparation</p>
           </div>
 
           <div className="headerRight">
             {overflowMinutes > 0 && (
-              <div
-                className={`overflowBadge ${overflowLevel}`}
-              >
-                <small>OVERFLOW</small>
-                <b>
-                  {formatMinutes(
-                    overflowMinutes
-                  )}
-                </b>
+              <div className={`overflowBadge ${overflowLevel}`}>
+                <small>DIYA OVERFLOW</small>
+                <b>{formatMinutes(overflowMinutes)}</b>
               </div>
             )}
 
@@ -1631,148 +1248,77 @@ const { data: overdue, error } = await supabase
         </header>
 
         {initializing && (
-          <div className="message">
-            Preparing your V2 study plan…
-          </div>
+          <div className="message">Preparing your study plans…</div>
         )}
 
-        {message && (
-          <div className="message">
-            {message}
-          </div>
-        )}
+        {message && <div className="message">{message}</div>}
 
-        {tab === 'Today' &&
-          studyTrack === 'questions' && (
-            <QuestionDashboard
+        {tab === 'Today' && (
+          <>
+            <StudentHeader
+              name="Diya"
+              subtitle="Question Track • 512+ Target"
+              badge="5–6 HOURS / DAY"
+            />
+
+            <DiyaDashboard
               today={today}
               selectedDate={selectedDate}
-              setSelectedDate={
-                setSelectedDate
-              }
-              selectedPhase={
-                selectedPhase
-              }
-              selectedTasks={
-                selectedTasks
-              }
-              selectedDueTasks={
-                selectedDueTasks
-              }
-              selectedOverflow={
-                selectedOverflow
-              }
-              currentOverflow={
-                currentOverflow
-              }
-              overflowMinutes={
-                overflowMinutes
-              }
-              overflowLevel={
-                overflowLevel
-              }
-              selectedCompleted={
-                selectedCompleted
-              }
-              selectedProgress={
-                selectedProgress
-              }
-              selectedPlannedMinutes={
-                selectedPlannedMinutes
-              }
-              selectedFocusedMinutes={
-                selectedFocusedMinutes
-              }
+              setSelectedDate={setSelectedDate}
+              selectedPhase={selectedPhase}
+              selectedTasks={selectedTasks}
+              selectedDueTasks={selectedDueTasks}
+              selectedOverflow={selectedOverflow}
+              currentOverflow={currentOverflow}
+              overflowMinutes={overflowMinutes}
+              overflowLevel={overflowLevel}
+              selectedCompleted={selectedCompleted}
+              selectedProgress={selectedProgress}
+              selectedPlannedMinutes={selectedPlannedMinutes}
+              selectedFocusedMinutes={selectedFocusedMinutes}
               weekDates={weekDates}
               weekTasks={weekTasks}
-              weekCompleted={
-                weekCompleted
-              }
-              weekQuestions={
-                weekQuestions
-              }
-              weekFocusedMinutes={
-                weekFocusedMinutes
-              }
-              tasks={tasks}
+              weekCompleted={weekCompleted}
+              weekQuestions={weekQuestions}
+              weekFocusedMinutes={weekFocusedMinutes}
+              tasks={v2Tasks}
               toggleTask={toggleTask}
-              focusMinutes={
-                focusMinutes
-              }
-              setFocusMinutes={
-                setFocusMinutes
-              }
-              breakMinutes={
-                breakMinutes
-              }
-              setBreakMinutes={
-                setBreakMinutes
-              }
+              focusMinutes={focusMinutes}
+              setFocusMinutes={setFocusMinutes}
+              breakMinutes={breakMinutes}
+              setBreakMinutes={setBreakMinutes}
               timerMode={timerMode}
-              timerSeconds={
-                timerSeconds
-              }
-              timerRunning={
-                timerRunning
-              }
-              setTimerRunning={
-                setTimerRunning
-              }
+              timerSeconds={timerSeconds}
+              timerRunning={timerRunning}
+              setTimerRunning={setTimerRunning}
               resetTimer={resetTimer}
             />
-          )}
 
-        {tab === 'Today' &&
-          studyTrack === 'content' && (
-            <ContentDashboard
-              activeChapter={
-                activeChapter
-              }
-              completedChapters={
-                completedChapters
-              }
-              chapters={chapters}
-              startChapter={
-                startChapter
-              }
-              toggleChapterItem={
-                toggleChapterItem
-              }
-              completeChapter={
-                completeChapter
-              }
-              focusMinutes={
-                focusMinutes
-              }
-              setFocusMinutes={
-                setFocusMinutes
-              }
-              breakMinutes={
-                breakMinutes
-              }
-              setBreakMinutes={
-                setBreakMinutes
-              }
-              timerMode={timerMode}
-              timerSeconds={
-                timerSeconds
-              }
-              timerRunning={
-                timerRunning
-              }
-              setTimerRunning={
-                setTimerRunning
-              }
-              resetTimer={resetTimer}
+            <div className="studentDivider" />
+
+            <StudentHeader
+              name="Hamzah"
+              subtitle="Kaplan Content Track"
+              badge={`${completedChapters}/${chapters.length} CHAPTERS`}
             />
-          )}
+
+            <HamzahDashboard
+              activeChapter={activeChapter}
+              completedChapters={completedChapters}
+              chapters={chapters}
+              startChapter={startChapter}
+              toggleChapterItem={toggleChapterItem}
+              completeChapter={completeChapter}
+            />
+          </>
+        )}
 
         {tab === 'Calendar' && (
           <CalendarView
-            tasks={tasks}
+            tasks={v2Tasks}
             today={today}
             selectedDate={selectedDate}
-            setSelectedDate={(date) => {
+            setSelectedDate={date => {
               setSelectedDate(date)
               setTab('Today')
             }}
@@ -1782,110 +1328,42 @@ const { data: overdue, error } = await supabase
         {tab === 'Questions' && (
           <QuestionsView
             today={today}
-            questionLogs={
-              questionLogs
-            }
-            addQuestionBlock={
-              addQuestionBlock
-            }
-          />
-        )}
-
-        {tab === 'Content' && (
-          <ContentView
-            chapters={chapters}
-            activeChapter={
-              activeChapter
-            }
-            completedChapters={
-              completedChapters
-            }
-            startChapter={
-              startChapter
-            }
-            toggleChapterItem={
-              toggleChapterItem
-            }
-            completeChapter={
-              completeChapter
-            }
+            questionLogs={questionLogs}
+            addQuestionBlock={addQuestionBlock}
           />
         )}
 
         {tab === 'Weaknesses' && (
           <WeaknessView
             weaknesses={weaknesses}
-            addWeakness={
-              addWeakness
-            }
-            updateMastery={
-              updateMastery
-            }
+            addWeakness={addWeakness}
+            updateMastery={updateMastery}
           />
         )}
 
         {tab === 'Full Lengths' && (
           <FullLengthView
             today={today}
-            fullLengths={
-              fullLengths
-            }
-            addFullLength={
-              addFullLength
-            }
+            fullLengths={fullLengths}
+            addFullLength={addFullLength}
           />
         )}
 
         {tab === 'Together' && (
           <TogetherView
-            today={today}
+            sharedSessions={sharedSessions}
             partners={partners}
-            sharedSessions={
-              sharedSessions
-            }
-            invitePartner={
-              invitePartner
-            }
-            addSharedSession={
-              addSharedSession
-            }
           />
         )}
 
         {tab === 'Analytics' && (
           <AnalyticsView
-            tasks={tasks}
-            questionLogs={
-              questionLogs
-            }
-            fullLengths={
-              fullLengths
-            }
-            studySessions={
-              studySessions
-            }
-            weaknesses={
-              weaknesses
-            }
+            tasks={v2Tasks}
+            questionLogs={questionLogs}
+            fullLengths={fullLengths}
+            studySessions={studySessions}
+            weaknesses={weaknesses}
             chapters={chapters}
-          />
-        )}
-
-        {tab === 'Settings' && (
-          <SettingsView
-            preferences={
-              preferences
-            }
-            studyTrack={
-              studyTrack
-            }
-            countdown={countdown}
-            updateDisplayName={
-              updateDisplayName
-            }
-            changeStudyTrack={
-              changeStudyTrack
-            }
           />
         )}
       </main>
@@ -1893,7 +1371,21 @@ const { data: overdue, error } = await supabase
   )
 }
 
-function QuestionDashboard(props) {
+function StudentHeader({ name, subtitle, badge }) {
+  return (
+    <section className="studentHeader">
+      <div>
+        <small>STUDENT</small>
+        <h2>{name}</h2>
+        <p>{subtitle}</p>
+      </div>
+
+      <strong>{badge}</strong>
+    </section>
+  )
+}
+
+function DiyaDashboard(props) {
   const {
     today,
     selectedDate,
@@ -1921,43 +1413,30 @@ function QuestionDashboard(props) {
   return (
     <>
       {overflowMinutes > 0 && (
-        <section
-          className={`card overflowPanel ${overflowLevel}`}
-        >
+        <section className={`card overflowPanel ${overflowLevel}`}>
           <div className="sectionTitle">
             <div>
-              <small>
-                ROLLED FORWARD
-              </small>
+              <small>DIYA • ROLLED FORWARD</small>
               <h2>Overflow</h2>
             </div>
 
-            <strong>
-              {formatMinutes(
-                overflowMinutes
-              )}
-            </strong>
+            <strong>{formatMinutes(overflowMinutes)}</strong>
           </div>
 
           <p>
-            These tasks were missed on
-            their original dates. The
-            original days remain flagged.
+            Only unfinished V2 work from October 3 onward appears here.
+            Historical September tasks are preserved but excluded.
           </p>
 
           <div className="taskList">
-            {currentOverflow.map(
-              (task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  toggleTask={
-                    toggleTask
-                  }
-                  overflow
-                />
-              )
-            )}
+            {currentOverflow.map(task => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                toggleTask={toggleTask}
+                overflow
+              />
+            ))}
           </div>
         </section>
       )}
@@ -1965,103 +1444,58 @@ function QuestionDashboard(props) {
       <section className="card weekSummary">
         <div className="weekTitle">
           <div>
-            <small>THIS WEEK</small>
+            <small>DIYA • THIS WEEK</small>
             <h2>Weekly Summary</h2>
           </div>
 
           <div className="weekStats">
             <span>
-              <b>{weekCompleted}</b> /{' '}
-              {weekTasks.length} tasks
+              <b>{weekCompleted}</b> / {weekTasks.length} tasks
             </span>
-
             <span>
-              <b>
-                {formatMinutes(
-                  weekFocusedMinutes
-                )}
-              </b>{' '}
-              focused
+              <b>{formatMinutes(weekFocusedMinutes)}</b> focused
             </span>
-
             <span>
-              <b>{weekQuestions}</b>{' '}
-              questions
+              <b>{weekQuestions}</b> questions
             </span>
           </div>
         </div>
 
         <div className="weekDays">
-          {weekDates.map((date) => {
-            const dateTasks =
-              tasks.filter(
-                (task) =>
-                  task.task_date === date
-              )
-
-            const done =
-              dateTasks.filter(
-                (task) =>
-                  task.completed
-              ).length
+          {weekDates.map(date => {
+            const dateTasks = tasks.filter(task => task.task_date === date)
+            const done = dateTasks.filter(task => task.completed).length
 
             const missed =
+              date >= PLAN_START &&
               date < today &&
-              dateTasks.some(
-                (task) =>
-                  !task.completed
-              )
+              dateTasks.some(task => !task.completed)
 
-            const late =
-              dateTasks.some(
-                (task) =>
-                  task.task_status ===
-                  'completed_late'
-              )
+            const late = dateTasks.some(
+              task => task.task_status === 'completed_late'
+            )
 
             return (
               <button
                 key={date}
                 className={[
-                  selectedDate === date
-                    ? 'selected'
-                    : '',
-                  missed
-                    ? 'missed'
-                    : '',
+                  selectedDate === date ? 'selected' : '',
+                  missed ? 'missed' : '',
                   late ? 'late' : '',
-                  date === today
-                    ? 'current'
-                    : '',
+                  date === today ? 'current' : '',
                 ]
                   .filter(Boolean)
                   .join(' ')}
-                onClick={() =>
-                  setSelectedDate(date)
-                }
+                onClick={() => setSelectedDate(date)}
               >
                 <small>
-                  {dateFromISO(
-                    date
-                  ).toLocaleDateString(
-                    undefined,
-                    {
-                      weekday: 'short',
-                    }
-                  )}
+                  {dateFromISO(date).toLocaleDateString(undefined, {
+                    weekday: 'short',
+                  })}
                 </small>
 
-                <b>
-                  {dateFromISO(
-                    date
-                  ).getDate()}
-                </b>
-
-                <span>
-                  {dateTasks.length
-                    ? `${done}/${dateTasks.length}`
-                    : '—'}
-                </span>
+                <b>{dateFromISO(date).getDate()}</b>
+                <span>{dateTasks.length ? `${done}/${dateTasks.length}` : '—'}</span>
               </button>
             )
           })}
@@ -2070,103 +1504,73 @@ function QuestionDashboard(props) {
 
       <div className="todayHeading">
         <div>
-          <small>
-            {formatDate(
-              selectedDate
-            ).toUpperCase()}
-          </small>
+          <small>{formatDate(selectedDate).toUpperCase()}</small>
 
           <h2>
-            {selectedDate ===
-            EXAM_DATE
+            {selectedDate < PLAN_START
+              ? 'V2 Begins October 3'
+              : selectedDate === EXAM_DATE
               ? 'MCAT DAY'
-              : isLightDay(
-                  selectedDate
-                )
+              : isLightDay(selectedDate)
               ? 'Light / Consolidation Day'
-              : `${getSubject(
-                  selectedDate
-                )} Practice Day`}
+              : `${getSubject(selectedDate)} Practice Day`}
           </h2>
 
           <p>
-            {selectedPhase?.notes ||
-              'Complete the highest-priority work first.'}
+            {selectedDate < PLAN_START
+              ? 'Your new intensive schedule starts October 3. Previous work remains in your history.'
+              : selectedPhase?.notes ||
+                'Complete high-priority questions and review before lower-priority work.'}
           </p>
         </div>
 
         <div className="todayMetrics">
           <span>
             <small>PLANNED</small>
-            <b>
-              {formatMinutes(
-                selectedPlannedMinutes
-              )}
-            </b>
+            <b>{formatMinutes(selectedPlannedMinutes)}</b>
           </span>
 
           <span>
             <small>FOCUSED</small>
-            <b>
-              {formatMinutes(
-                selectedFocusedMinutes
-              )}
-            </b>
+            <b>{formatMinutes(selectedFocusedMinutes)}</b>
           </span>
         </div>
       </div>
 
-      {selectedOverflow.length >
-        0 && (
+      {selectedOverflow.length > 0 && (
         <section className="card">
           <div className="sectionTitle">
             <div>
-              <small>
-                OVERFLOW FOR THIS DAY
-              </small>
-              <h2>
-                Carried Work
-              </h2>
+              <small>DIYA • OVERFLOW</small>
+              <h2>Carried Work</h2>
             </div>
           </div>
 
           <div className="taskList">
-            {selectedOverflow.map(
-              (task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  toggleTask={
-                    toggleTask
-                  }
-                  overflow
-                />
-              )
-            )}
+            {selectedOverflow.map(task => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                toggleTask={toggleTask}
+                overflow
+              />
+            ))}
           </div>
         </section>
       )}
 
       <section className="card progressCard">
         <div>
-          <b>Daily progress</b>
+          <b>Diya&apos;s daily progress</b>
           <span>
-            {selectedCompleted} of{' '}
-            {selectedTasks.length}{' '}
-            complete
+            {selectedCompleted} of {selectedTasks.length} complete
           </span>
         </div>
 
-        <strong>
-          {selectedProgress}%
-        </strong>
+        <strong>{selectedProgress}%</strong>
 
         <div className="progress">
-          <i
-            style={{
-              width: `${selectedProgress}%`,
-            }}
-          />
+          <i style={{ width: `${selectedProgress}%` }} />
         </div>
       </section>
 
@@ -2174,35 +1578,27 @@ function QuestionDashboard(props) {
         <section className="card">
           <div className="sectionTitle">
             <div>
-              <small>TODAY</small>
-              <h2>
-                Study Checklist
-              </h2>
+              <small>DIYA • TODAY</small>
+              <h2>Study Checklist</h2>
             </div>
 
-            <span>
-              {selectedDueTasks.length}{' '}
-              tasks
-            </span>
+            <span>{selectedDueTasks.length} tasks</span>
           </div>
 
           <div className="taskList">
-            {selectedDueTasks.map(
-              (task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  toggleTask={
-                    toggleTask
-                  }
-                />
-              )
-            )}
+            {selectedDueTasks.map(task => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                toggleTask={toggleTask}
+              />
+            ))}
 
             {!selectedDueTasks.length && (
               <p className="empty">
-                No scheduled tasks for
-                this date.
+                {selectedDate < PLAN_START
+                  ? 'Your V2 plan starts October 3.'
+                  : 'No scheduled tasks for this date.'}
               </p>
             )}
           </div>
@@ -2214,34 +1610,164 @@ function QuestionDashboard(props) {
   )
 }
 
-function TaskRow({
-  task,
-  toggleTask,
-  overflow = false,
+function HamzahDashboard({
+  activeChapter,
+  completedChapters,
+  chapters,
+  startChapter,
+  toggleChapterItem,
+  completeChapter,
 }) {
+  const progress = chapters.length
+    ? Math.round((completedChapters / chapters.length) * 100)
+    : 0
+
+  return (
+    <>
+      <section className="card contentHero HamzahHero">
+        <div>
+          <small>Hamzah • KAPLAN CONTENT REVIEW</small>
+
+          <h2>
+            {activeChapter
+              ? `${activeChapter.subject} — Chapter ${activeChapter.chapter_number}`
+              : 'Kaplan Content Review'}
+          </h2>
+
+          <p>
+            {activeChapter?.chapter_title ||
+              'All assigned Kaplan chapters completed.'}
+          </p>
+        </div>
+
+        <div className="chapterCounter">
+          <b>{completedChapters}</b>
+          <span>/ {chapters.length} chapters</span>
+        </div>
+      </section>
+
+      <section className="card progressCard">
+        <div>
+          <b>Hamzah&apos;s content progress</b>
+          <span>
+            {completedChapters} of {chapters.length} chapters complete
+          </span>
+        </div>
+
+        <strong>{progress}%</strong>
+
+        <div className="progress">
+          <i style={{ width: `${progress}%` }} />
+        </div>
+      </section>
+
+      <div className="dashboardGrid">
+        <section className="card">
+          <div className="sectionTitle">
+            <div>
+              <small>Hamzah • CURRENT</small>
+              <h2>Chapter Checklist</h2>
+            </div>
+          </div>
+
+          {!activeChapter && (
+            <p className="empty">Kaplan chapter sequence complete.</p>
+          )}
+
+          {activeChapter?.status === 'not_started' && (
+            <>
+              <div className="activeChapterCard">
+                <small>NEXT CHAPTER</small>
+                <h2>
+                  {activeChapter.subject} • Chapter{' '}
+                  {activeChapter.chapter_number}
+                </h2>
+                <p>{activeChapter.chapter_title}</p>
+              </div>
+
+              <button onClick={() => startChapter(activeChapter)}>
+                Start Hamzah&apos;s Chapter
+              </button>
+            </>
+          )}
+
+          {activeChapter?.status === 'in_progress' && (
+            <ChapterChecklist
+              chapter={activeChapter}
+              toggleChapterItem={toggleChapterItem}
+              completeChapter={completeChapter}
+            />
+          )}
+        </section>
+
+        <section className="card">
+          <div className="sectionTitle">
+            <div>
+              <small>Hamzah • ROADMAP</small>
+              <h2>Upcoming Chapters</h2>
+            </div>
+          </div>
+
+          <div className="chapterList">
+            {chapters.slice(
+              Math.max(
+                0,
+                chapters.findIndex(
+                  chapter => chapter.id === activeChapter?.id
+                )
+              ),
+              Math.max(
+                0,
+                chapters.findIndex(
+                  chapter => chapter.id === activeChapter?.id
+                )
+              ) + 6
+            ).map(chapter => (
+              <div
+                className={`chapterRow ${chapter.status}`}
+                key={chapter.id}
+              >
+                <span className="chapterSequence">
+                  {chapter.sequence_number}
+                </span>
+
+                <div>
+                  <small>{chapter.subject}</small>
+                  <b>
+                    Ch {chapter.chapter_number}: {chapter.chapter_title}
+                  </b>
+                </div>
+
+                <strong>
+                  {chapter.status === 'completed'
+                    ? 'Complete'
+                    : chapter.status === 'in_progress'
+                    ? 'In Progress'
+                    : 'Upcoming'}
+                </strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </>
+  )
+}
+
+function TaskRow({ task, toggleTask, overflow = false }) {
   return (
     <div
       className={[
         'task',
-        task.completed
-          ? 'completed'
-          : '',
-        overflow
-          ? 'overflowTask'
-          : '',
+        task.completed ? 'completed' : '',
+        overflow ? 'overflowTask' : '',
       ]
         .filter(Boolean)
         .join(' ')}
     >
       <button
-        className={`taskCheck ${
-          task.completed
-            ? 'done'
-            : ''
-        }`}
-        onClick={() =>
-          toggleTask(task)
-        }
+        className={`taskCheck ${task.completed ? 'done' : ''}`}
+        onClick={() => toggleTask(task)}
       >
         {task.completed ? '✓' : ''}
       </button>
@@ -2249,30 +1775,17 @@ function TaskRow({
       <div className="taskBody">
         <small>
           {overflow
-            ? `FROM ${formatDate(
-                task.task_date
-              ).toUpperCase()} • `
+            ? `FROM ${formatDate(task.task_date).toUpperCase()} • `
             : ''}
-          {task.task_type} •{' '}
-          {task.resource}
+          {task.task_type} • {task.resource}
         </small>
 
         <b>{task.title}</b>
 
         <span>
-          {formatMinutes(
-            task.estimated_minutes
-          )}
-
-          {task.subject
-            ? ` • ${task.subject}`
-            : ''}
-
-          {overflow
-            ? ` • carried ${
-                task.carry_count || 1
-              }×`
-            : ''}
+          {formatMinutes(task.estimated_minutes)}
+          {task.subject ? ` • ${task.subject}` : ''}
+          {overflow ? ` • carried ${task.carry_count || 1}×` : ''}
         </span>
       </div>
     </div>
@@ -2290,22 +1803,16 @@ function Pomodoro({
   setTimerRunning,
   resetTimer,
 }) {
-  const minutes = String(
-    Math.floor(timerSeconds / 60)
-  ).padStart(2, '0')
-
-  const seconds = String(
-    timerSeconds % 60
-  ).padStart(2, '0')
+  const minutes = String(Math.floor(timerSeconds / 60)).padStart(2, '0')
+  const seconds = String(timerSeconds % 60).padStart(2, '0')
 
   return (
     <section className="card pomodoro">
       <div className="sectionTitle">
         <div>
-          <small>FOCUS</small>
+          <small>DIYA • FOCUS</small>
           <h2>Pomodoro</h2>
         </div>
-
         <span>{timerMode}</span>
       </div>
 
@@ -2314,21 +1821,8 @@ function Pomodoro({
       </div>
 
       <div className="timerModes">
-        <button
-          onClick={() =>
-            resetTimer('Focus')
-          }
-        >
-          Focus
-        </button>
-
-        <button
-          onClick={() =>
-            resetTimer('Break')
-          }
-        >
-          Break
-        </button>
+        <button onClick={() => resetTimer('Focus')}>Focus</button>
+        <button onClick={() => resetTimer('Break')}>Break</button>
       </div>
 
       <div className="timerInputs">
@@ -2338,15 +1832,8 @@ function Pomodoro({
             type="number"
             min="1"
             value={focusMinutes}
-            onChange={(event) =>
-              setFocusMinutes(
-                Math.max(
-                  1,
-                  Number(
-                    event.target.value
-                  ) || 1
-                )
-              )
+            onChange={event =>
+              setFocusMinutes(Math.max(1, Number(event.target.value) || 1))
             }
           />
         </label>
@@ -2357,15 +1844,8 @@ function Pomodoro({
             type="number"
             min="1"
             value={breakMinutes}
-            onChange={(event) =>
-              setBreakMinutes(
-                Math.max(
-                  1,
-                  Number(
-                    event.target.value
-                  ) || 1
-                )
-              )
+            onChange={event =>
+              setBreakMinutes(Math.max(1, Number(event.target.value) || 1))
             }
           />
         </label>
@@ -2373,112 +1853,11 @@ function Pomodoro({
 
       <button
         className="timerButton"
-        onClick={() =>
-          setTimerRunning(
-            (current) => !current
-          )
-        }
+        onClick={() => setTimerRunning(current => !current)}
       >
-        {timerRunning
-          ? 'Pause'
-          : 'Start'}
+        {timerRunning ? 'Pause' : 'Start'}
       </button>
     </section>
-  )
-}
-
-function ContentDashboard({
-  activeChapter,
-  completedChapters,
-  chapters,
-  startChapter,
-  toggleChapterItem,
-  completeChapter,
-  ...timerProps
-}) {
-  return (
-    <>
-      <section className="card contentHero">
-        <div>
-          <small>
-            KAPLAN CONTENT TRACK
-          </small>
-
-          <h2>
-            {activeChapter
-              ? `${activeChapter.subject} — Chapter ${activeChapter.chapter_number}`
-              : 'Kaplan Content Review'}
-          </h2>
-
-          <p>
-            {activeChapter?.chapter_title ||
-              'All assigned chapters completed.'}
-          </p>
-        </div>
-
-        <div className="chapterCounter">
-          <b>
-            {completedChapters}
-          </b>
-          <span>
-            / {chapters.length}{' '}
-            chapters
-          </span>
-        </div>
-      </section>
-
-      <div className="dashboardGrid">
-        <section className="card">
-          <div className="sectionTitle">
-            <div>
-              <small>CURRENT</small>
-              <h2>
-                Chapter Checklist
-              </h2>
-            </div>
-          </div>
-
-          {!activeChapter && (
-            <p>
-              Kaplan chapter sequence
-              complete.
-            </p>
-          )}
-
-          {activeChapter?.status ===
-            'not_started' && (
-            <button
-              onClick={() =>
-                startChapter(
-                  activeChapter
-                )
-              }
-            >
-              Start this chapter
-            </button>
-          )}
-
-          {activeChapter?.status ===
-            'in_progress' && (
-            <ChapterChecklist
-              chapter={
-                activeChapter
-              }
-              toggleChapterItem={
-                toggleChapterItem
-              }
-              completeChapter={
-                completeChapter
-              }
-            />
-          )}
-        </section>
-
-        <Pomodoro
-          {...timerProps}
-        />
-      </div>
-    </>
   )
 }
 
@@ -2488,213 +1867,45 @@ function ChapterChecklist({
   completeChapter,
 }) {
   const checklist = [
-    [
-      'concept_checks_completed',
-      'Read chapter + concept checks',
-    ],
-    [
-      'chapter_questions_completed',
-      'Chapter questions',
-    ],
-    [
-      'recall_completed',
-      'Closed-book recall',
-    ],
-    [
-      'practice_completed',
-      'Related practice questions',
-    ],
+    ['concept_checks_completed', 'Read chapter + concept checks'],
+    ['chapter_questions_completed', 'Chapter questions'],
+    ['recall_completed', 'Closed-book recall'],
+    ['practice_completed', '10–20 related practice questions'],
   ]
 
   return (
     <div className="chapterChecklist">
-      {checklist.map(
-        ([field, label]) => (
-          <button
-            key={field}
-            className={
-              chapter[field]
-                ? 'chapterDone'
-                : ''
-            }
-            onClick={() =>
-              toggleChapterItem(
-                chapter,
-                field
-              )
-            }
-          >
-            <span>
-              {chapter[field]
-                ? '✓'
-                : ''}
-            </span>
-            <b>{label}</b>
-          </button>
-        )
-      )}
+      <div className="activeChapterCard">
+        <small>Hamzah&apos;S CURRENT CHAPTER</small>
+        <h2>
+          {chapter.subject} • Chapter {chapter.chapter_number}
+        </h2>
+        <p>{chapter.chapter_title}</p>
+      </div>
+
+      {checklist.map(([field, label]) => (
+        <button
+          key={field}
+          className={chapter[field] ? 'chapterDone' : ''}
+          onClick={() => toggleChapterItem(chapter, field)}
+        >
+          <span>{chapter[field] ? '✓' : ''}</span>
+          <b>{label}</b>
+        </button>
+      ))}
 
       <button
         className="completeChapter"
-        onClick={() =>
-          completeChapter(chapter)
-        }
+        onClick={() => completeChapter(chapter)}
       >
-        Complete Chapter
+        Complete Hamzah&apos;s Chapter
       </button>
     </div>
   )
 }
 
-function ContentView({
-  chapters,
-  activeChapter,
-  completedChapters,
-  startChapter,
-  toggleChapterItem,
-  completeChapter,
-}) {
-  return (
-    <>
-      <section className="card contentHero">
-        <div>
-          <small>
-            KAPLAN ROADMAP
-          </small>
-          <h2>Content Review</h2>
-          <p>
-            Chapters progress
-            sequentially, so a missed
-            chapter does not break the
-            calendar.
-          </p>
-        </div>
-
-        <div className="chapterCounter">
-          <b>
-            {completedChapters}
-          </b>
-          <span>
-            / {chapters.length}
-          </span>
-        </div>
-      </section>
-
-      {activeChapter && (
-        <section className="card activeChapterCard">
-          <small>
-            CURRENT CHAPTER
-          </small>
-
-          <h2>
-            {activeChapter.subject} •
-            Chapter{' '}
-            {
-              activeChapter.chapter_number
-            }
-          </h2>
-
-          <p>
-            {
-              activeChapter.chapter_title
-            }
-          </p>
-
-          {activeChapter.status ===
-          'not_started' ? (
-            <button
-              onClick={() =>
-                startChapter(
-                  activeChapter
-                )
-              }
-            >
-              Start Chapter
-            </button>
-          ) : (
-            <ChapterChecklist
-              chapter={
-                activeChapter
-              }
-              toggleChapterItem={
-                toggleChapterItem
-              }
-              completeChapter={
-                completeChapter
-              }
-            />
-          )}
-        </section>
-      )}
-
-      <section className="card">
-        <div className="sectionTitle">
-          <div>
-            <small>
-              ALL CHAPTERS
-            </small>
-            <h2>
-              Kaplan Progress
-            </h2>
-          </div>
-        </div>
-
-        <div className="chapterList">
-          {chapters.map(
-            (chapter) => (
-              <div
-                className={`chapterRow ${chapter.status}`}
-                key={chapter.id}
-              >
-                <span className="chapterSequence">
-                  {
-                    chapter.sequence_number
-                  }
-                </span>
-
-                <div>
-                  <small>
-                    {chapter.subject}
-                  </small>
-
-                  <b>
-                    Ch{' '}
-                    {
-                      chapter.chapter_number
-                    }
-                    :{' '}
-                    {
-                      chapter.chapter_title
-                    }
-                  </b>
-                </div>
-
-                <strong>
-                  {chapter.status ===
-                  'completed'
-                    ? 'Complete'
-                    : chapter.status ===
-                      'in_progress'
-                    ? 'In Progress'
-                    : 'Upcoming'}
-                </strong>
-              </div>
-            )
-          )}
-        </div>
-      </section>
-    </>
-  )
-}
-
-function CalendarView({
-  tasks,
-  today,
-  selectedDate,
-  setSelectedDate,
-}) {
+function CalendarView({ tasks, today, selectedDate, setSelectedDate }) {
   const dates = []
-
   let cursor = PLAN_START
 
   while (cursor <= EXAM_DATE) {
@@ -2706,45 +1917,26 @@ function CalendarView({
     <section className="card">
       <div className="sectionTitle">
         <div>
-          <small>
-            OCT 3 → JAN 21
-          </small>
-          <h2>MCAT Calendar</h2>
+          <small>DIYA • OCT 3 → JAN 21</small>
+          <h2>Study Calendar</h2>
         </div>
       </div>
 
       <div className="calendarGrid">
-        {dates.map((date) => {
-          const dateTasks =
-            tasks.filter(
-              (task) =>
-                task.task_date === date
-            )
-
-          const completed =
-            dateTasks.filter(
-              (task) =>
-                task.completed
-            ).length
+        {dates.map(date => {
+          const dateTasks = tasks.filter(task => task.task_date === date)
+          const completed = dateTasks.filter(task => task.completed).length
 
           const incomplete =
-            date < today &&
-            dateTasks.some(
-              (task) =>
-                !task.completed
-            )
+            date < today && dateTasks.some(task => !task.completed)
 
-          const late =
-            dateTasks.some(
-              (task) =>
-                task.task_status ===
-                'completed_late'
-            )
+          const late = dateTasks.some(
+            task => task.task_status === 'completed_late'
+          )
 
           const complete =
             dateTasks.length > 0 &&
-            completed ===
-              dateTasks.length &&
+            completed === dateTasks.length &&
             !late
 
           const status = incomplete
@@ -2761,35 +1953,20 @@ function CalendarView({
             <button
               key={date}
               className={`${status} ${
-                selectedDate === date
-                  ? 'selected'
-                  : ''
+                selectedDate === date ? 'selected' : ''
               }`}
-              onClick={() =>
-                setSelectedDate(date)
-              }
+              onClick={() => setSelectedDate(date)}
             >
               <small>
-                {dateFromISO(
-                  date
-                ).toLocaleDateString(
-                  undefined,
-                  {
-                    weekday: 'short',
-                  }
-                )}
+                {dateFromISO(date).toLocaleDateString(undefined, {
+                  weekday: 'short',
+                })}
               </small>
 
-              <b>
-                {dateFromISO(
-                  date
-                ).getDate()}
-              </b>
+              <b>{dateFromISO(date).getDate()}</b>
 
               <span>
-                {dateTasks.length
-                  ? `${completed}/${dateTasks.length}`
-                  : '—'}
+                {dateTasks.length ? `${completed}/${dateTasks.length}` : '—'}
               </span>
             </button>
           )
@@ -2799,61 +1976,37 @@ function CalendarView({
   )
 }
 
-function QuestionsView({
-  today,
-  questionLogs,
-  addQuestionBlock,
-}) {
+function QuestionsView({ today, questionLogs, addQuestionBlock }) {
   return (
     <div className="dashboardGrid">
       <section className="card">
         <div className="sectionTitle">
           <div>
-            <small>LOG</small>
-            <h2>
-              Question Block
-            </h2>
+            <small>DIYA • LOG</small>
+            <h2>Question Block</h2>
           </div>
         </div>
 
-        <form
-          className="form"
-          onSubmit={
-            addQuestionBlock
-          }
-        >
+        <form className="form" onSubmit={addQuestionBlock}>
           <label>
             Date
-            <input
-              name="date"
-              type="date"
-              defaultValue={today}
-              required
-            />
+            <input name="date" type="date" defaultValue={today} required />
           </label>
 
           <label>
             Resource
-            <select
-              name="source"
-              defaultValue="UWorld"
-            >
+            <select name="source" defaultValue="UWorld">
               <option>UWorld</option>
               <option>Kaplan</option>
               <option>AAMC</option>
-              <option>
-                Jack Westin
-              </option>
+              <option>Jack Westin</option>
               <option>Other</option>
             </select>
           </label>
 
           <label>
             Section
-            <select
-              name="subject"
-              defaultValue="B/B"
-            >
+            <select name="subject" defaultValue="B/B">
               <option>B/B</option>
               <option>C/P</option>
               <option>P/S</option>
@@ -2864,97 +2017,57 @@ function QuestionsView({
 
           <label>
             Questions
-            <input
-              name="total"
-              type="number"
-              min="1"
-              required
-            />
+            <input name="total" type="number" min="1" required />
           </label>
 
           <label>
             Correct
-            <input
-              name="correct"
-              type="number"
-              min="0"
-              required
-            />
+            <input name="correct" type="number" min="0" required />
           </label>
 
           <label className="checkboxLabel">
-            <input
-              name="timed"
-              type="checkbox"
-            />
+            <input name="timed" type="checkbox" />
             Timed
           </label>
 
-          <button type="submit">
-            Log Questions
-          </button>
+          <button type="submit">Log Questions</button>
         </form>
       </section>
 
       <section className="card">
         <div className="sectionTitle">
           <div>
-            <small>RECENT</small>
-            <h2>
-              Question History
-            </h2>
+            <small>DIYA • RECENT</small>
+            <h2>Question History</h2>
           </div>
         </div>
 
         <div className="logList">
-          {questionLogs.map(
-            (log) => {
-              const accuracy =
-                log.total_questions
-                  ? Math.round(
-                      (log.correct_questions /
-                        log.total_questions) *
-                        100
-                    )
-                  : 0
+          {questionLogs.map(log => {
+            const accuracy = log.total_questions
+              ? Math.round(
+                  (log.correct_questions / log.total_questions) * 100
+                )
+              : 0
 
-              return (
-                <div
-                  className="logRow"
-                  key={log.id}
-                >
-                  <div>
-                    <small>
-                      {
-                        log.question_date
-                      }{' '}
-                      • {log.source}
-                    </small>
-                    <b>
-                      {log.subject}
-                    </b>
-                  </div>
-
-                  <strong>
-                    {
-                      log.correct_questions
-                    }
-                    /
-                    {
-                      log.total_questions
-                    }{' '}
-                    • {accuracy}%
-                  </strong>
+            return (
+              <div className="logRow" key={log.id}>
+                <div>
+                  <small>
+                    {log.question_date} • {log.source}
+                  </small>
+                  <b>{log.subject}</b>
                 </div>
-              )
-            }
-          )}
+
+                <strong>
+                  {log.correct_questions}/{log.total_questions} • {accuracy}%
+                </strong>
+              </div>
+            )
+          })}
 
           {!questionLogs.length && (
-            <p className="empty">
-              No question blocks
-              logged yet.
-            </p>
+            <p className="empty">No question blocks logged yet.</p>
           )}
         </div>
       </section>
@@ -2962,31 +2075,21 @@ function QuestionsView({
   )
 }
 
-function WeaknessView({
-  weaknesses,
-  addWeakness,
-  updateMastery,
-}) {
+function WeaknessView({ weaknesses, addWeakness, updateMastery }) {
   return (
     <div className="dashboardGrid">
       <section className="card">
         <div className="sectionTitle">
           <div>
-            <small>NEW</small>
+            <small>DIYA • NEW</small>
             <h2>Add Weakness</h2>
           </div>
         </div>
 
-        <form
-          className="form"
-          onSubmit={addWeakness}
-        >
+        <form className="form" onSubmit={addWeakness}>
           <label>
             MCAT Section
-            <select
-              name="section"
-              defaultValue="B/B"
-            >
+            <select name="section" defaultValue="B/B">
               <option>B/B</option>
               <option>C/P</option>
               <option>P/S</option>
@@ -2996,20 +2099,12 @@ function WeaknessView({
 
           <label>
             Subject
-            <input
-              name="subject"
-              placeholder="Biochemistry"
-              required
-            />
+            <input name="subject" placeholder="Biochemistry" required />
           </label>
 
           <label>
             Topic
-            <input
-              name="topic"
-              placeholder="Amino Acids"
-              required
-            />
+            <input name="topic" placeholder="Amino Acids" required />
           </label>
 
           <label>
@@ -3022,103 +2117,56 @@ function WeaknessView({
 
           <label>
             Notes
-            <textarea
-              name="notes"
-              placeholder="What went wrong?"
-            />
+            <textarea name="notes" placeholder="What went wrong?" />
           </label>
 
-          <button type="submit">
-            Add Weakness
-          </button>
+          <button type="submit">Add Weakness</button>
         </form>
       </section>
 
       <section className="card">
         <div className="sectionTitle">
           <div>
-            <small>MASTERY</small>
-            <h2>
-              Weakness Tracker
-            </h2>
+            <small>DIYA • MASTERY</small>
+            <h2>Weakness Tracker</h2>
           </div>
         </div>
 
         <div className="weaknessList">
-          {weaknesses.map(
-            (weakness) => (
-              <div
-                className={`weakness ${weakness.mastery_level}`}
-                key={weakness.id}
-              >
-                <div>
-                  <small>
-                    {
-                      weakness.section
-                    }{' '}
-                    •{' '}
-                    {
-                      weakness.subject
-                    }
-                  </small>
+          {weaknesses.map(weakness => (
+            <div
+              className={`weakness ${weakness.mastery_level}`}
+              key={weakness.id}
+            >
+              <div>
+                <small>
+                  {weakness.section} • {weakness.subject}
+                </small>
 
-                  <b>
-                    {weakness.topic}
-                    {weakness.subtopic
-                      ? ` — ${weakness.subtopic}`
-                      : ''}
-                  </b>
+                <b>
+                  {weakness.topic}
+                  {weakness.subtopic ? ` — ${weakness.subtopic}` : ''}
+                </b>
 
-                  <span>
-                    Retest:{' '}
-                    {weakness.retest_date ||
-                      'Not scheduled'}
-                  </span>
-                </div>
-
-                <div className="masteryButtons">
-                  <button
-                    onClick={() =>
-                      updateMastery(
-                        weakness,
-                        'red'
-                      )
-                    }
-                  >
-                    Red
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      updateMastery(
-                        weakness,
-                        'yellow'
-                      )
-                    }
-                  >
-                    Yellow
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      updateMastery(
-                        weakness,
-                        'green'
-                      )
-                    }
-                  >
-                    Green
-                  </button>
-                </div>
+                <span>Retest: {weakness.retest_date || 'Not scheduled'}</span>
               </div>
-            )
-          )}
+
+              <div className="masteryButtons">
+                <button onClick={() => updateMastery(weakness, 'red')}>
+                  Red
+                </button>
+                <button onClick={() => updateMastery(weakness, 'yellow')}>
+                  Yellow
+                </button>
+                <button onClick={() => updateMastery(weakness, 'green')}>
+                  Green
+                </button>
+              </div>
+            </div>
+          ))}
 
           {!weaknesses.length && (
-            <p className="empty">
-              No weaknesses logged
-              yet.
-            </p>
+            <p className="empty">No weaknesses logged yet.</p>
           )}
         </div>
       </section>
@@ -3126,148 +2174,71 @@ function WeaknessView({
   )
 }
 
-function FullLengthView({
-  today,
-  fullLengths,
-  addFullLength,
-}) {
+function FullLengthView({ today, fullLengths, addFullLength }) {
   return (
     <div className="dashboardGrid">
       <section className="card">
         <div className="sectionTitle">
           <div>
-            <small>SCORE</small>
-            <h2>
-              Log Full Length
-            </h2>
+            <small>SHARED MILESTONE</small>
+            <h2>Log Full Length</h2>
           </div>
         </div>
 
-        <form
-          className="form"
-          onSubmit={addFullLength}
-        >
+        <form className="form" onSubmit={addFullLength}>
           <label>
             Date
-            <input
-              name="date"
-              type="date"
-              defaultValue={today}
-              required
-            />
+            <input name="date" type="date" defaultValue={today} required />
           </label>
 
           <label>
             Exam
-            <input
-              name="name"
-              placeholder="AAMC FL 1"
-              required
-            />
+            <input name="name" placeholder="AAMC FL 1" required />
           </label>
 
-          <label>
-            C/P
-            <input
-              name="cp"
-              type="number"
-              min="118"
-              max="132"
-              required
-            />
-          </label>
+          {['cp', 'cars', 'bb', 'ps'].map(field => (
+            <label key={field}>
+              {field.toUpperCase()}
+              <input
+                name={field}
+                type="number"
+                min="118"
+                max="132"
+                required
+              />
+            </label>
+          ))}
 
-          <label>
-            CARS
-            <input
-              name="cars"
-              type="number"
-              min="118"
-              max="132"
-              required
-            />
-          </label>
-
-          <label>
-            B/B
-            <input
-              name="bb"
-              type="number"
-              min="118"
-              max="132"
-              required
-            />
-          </label>
-
-          <label>
-            P/S
-            <input
-              name="ps"
-              type="number"
-              min="118"
-              max="132"
-              required
-            />
-          </label>
-
-          <button type="submit">
-            Save Full Length
-          </button>
+          <button type="submit">Save Full Length</button>
         </form>
       </section>
 
       <section className="card">
         <div className="sectionTitle">
           <div>
-            <small>
-              PROGRESSION
-            </small>
-            <h2>
-              Full Length History
-            </h2>
+            <small>PROGRESSION</small>
+            <h2>Full Length History</h2>
           </div>
         </div>
 
         <div className="flList">
-          {fullLengths.map(
-            (exam) => (
-              <div
-                className="flRow"
-                key={exam.id}
-              >
-                <div>
-                  <small>
-                    {exam.exam_date}
-                  </small>
-                  <b>
-                    {exam.exam_name}
-                  </b>
-                  <span>
-                    C/P{' '}
-                    {exam.cp_score} •
-                    CARS{' '}
-                    {exam.cars_score} •
-                    B/B{' '}
-                    {exam.bb_score} •
-                    P/S{' '}
-                    {exam.ps_score}
-                  </span>
-                </div>
-
-                <strong>
-                  {
-                    exam.total_score
-                  }
-                </strong>
+          {fullLengths.map(exam => (
+            <div className="flRow" key={exam.id}>
+              <div>
+                <small>{exam.exam_date}</small>
+                <b>{exam.exam_name}</b>
+                <span>
+                  C/P {exam.cp_score} • CARS {exam.cars_score} • B/B{' '}
+                  {exam.bb_score} • P/S {exam.ps_score}
+                </span>
               </div>
-            )
-          )}
+
+              <strong>{exam.total_score}</strong>
+            </div>
+          ))}
 
           {!fullLengths.length && (
-            <p className="empty">
-              No full-length scores
-              logged yet.
-            </p>
+            <p className="empty">No full-length scores logged yet.</p>
           )}
         </div>
       </section>
@@ -3275,25 +2246,16 @@ function FullLengthView({
   )
 }
 
-function TogetherView({
-  today,
-  partners,
-  sharedSessions,
-  invitePartner,
-  addSharedSession,
-}) {
+function TogetherView({ sharedSessions, partners }) {
   return (
     <>
       <section className="card togetherHero">
         <div>
-          <small>
-            STUDY TOGETHER
-          </small>
-          <h2>Partner Mode</h2>
+          <small>DIYA + Hamzah</small>
+          <h2>Together</h2>
           <p>
-            Keep separate schedules
-            and progress while sharing
-            selected study sessions.
+            Shared CARS sessions, full lengths, reviews, and weekly study
+            milestones will live here.
           </p>
         </div>
       </section>
@@ -3302,189 +2264,64 @@ function TogetherView({
         <section className="card">
           <div className="sectionTitle">
             <div>
-              <small>
-                PARTNER
-              </small>
-              <h2>Connect</h2>
+              <small>STUDY TEAM</small>
+              <h2>Students</h2>
             </div>
           </div>
 
-          <form
-            className="form"
-            onSubmit={
-              invitePartner
-            }
-          >
-            <label>
-              Friend&apos;s account
-              email
-              <input
-                name="email"
-                type="email"
-                placeholder="friend@email.com"
-                required
-              />
-            </label>
-
-            <button type="submit">
-              Invite Study Partner
-            </button>
-          </form>
-
           <div className="partnerList">
-            {partners.map(
-              (partner) => (
-                <div
-                  className="partnerRow"
-                  key={partner.id}
-                >
-                  <div>
-                    <small>
-                      STUDY PARTNER
-                    </small>
-                    <b>
-                      {partner.invite_email ||
-                        'Connected account'}
-                    </b>
-                  </div>
+            <div className="partnerRow">
+              <div>
+                <small>QUESTION TRACK</small>
+                <b>Diya</b>
+              </div>
+              <strong>512+ Target</strong>
+            </div>
 
-                  <strong>
-                    {partner.status}
-                  </strong>
-                </div>
-              )
-            )}
+            <div className="partnerRow">
+              <div>
+                <small>KAPLAN CONTENT TRACK</small>
+                <b>Hamzah</b>
+              </div>
+              <strong>Content Review</strong>
+            </div>
           </div>
+
+          {partners.length > 0 && (
+            <p>
+              Supabase partner connection records: {partners.length}
+            </p>
+          )}
         </section>
 
         <section className="card">
           <div className="sectionTitle">
             <div>
-              <small>
-                SESSION
-              </small>
-              <h2>
-                Plan Study Together
-              </h2>
+              <small>SESSIONS</small>
+              <h2>Shared Study</h2>
             </div>
           </div>
 
-          <form
-            className="form"
-            onSubmit={
-              addSharedSession
-            }
-          >
-            <label>
-              Date
-              <input
-                name="date"
-                type="date"
-                defaultValue={today}
-                required
-              />
-            </label>
-
-            <label>
-              Title
-              <input
-                name="title"
-                placeholder="CARS session"
-                required
-              />
-            </label>
-
-            <label>
-              Type
-              <select
-                name="type"
-                defaultValue="CARS"
-              >
-                <option>CARS</option>
-                <option>
-                  Full Length
-                </option>
-                <option>
-                  Full Length Review
-                </option>
-                <option>
-                  Weakness Review
-                </option>
-                <option>
-                  Study Session
-                </option>
-              </select>
-            </label>
-
-            <label>
-              Minutes
-              <input
-                name="minutes"
-                type="number"
-                min="15"
-                defaultValue="60"
-                required
-              />
-            </label>
-
-            <button type="submit">
-              Create Session
-            </button>
-          </form>
-        </section>
-      </div>
-
-      <section className="card">
-        <div className="sectionTitle">
-          <div>
-            <small>
-              UPCOMING / RECENT
-            </small>
-            <h2>
-              Shared Sessions
-            </h2>
-          </div>
-        </div>
-
-        <div className="logList">
-          {sharedSessions.map(
-            (item) => (
-              <div
-                className="logRow"
-                key={item.id}
-              >
+          <div className="logList">
+            {sharedSessions.map(item => (
+              <div className="logRow" key={item.id}>
                 <div>
                   <small>
-                    {
-                      item.session_date
-                    }{' '}
-                    •{' '}
-                    {
-                      item.session_type
-                    }
+                    {item.session_date} • {item.session_type}
                   </small>
-                  <b>
-                    {item.title}
-                  </b>
+                  <b>{item.title}</b>
                 </div>
 
-                <strong>
-                  {formatMinutes(
-                    item.planned_minutes
-                  )}
-                </strong>
+                <strong>{formatMinutes(item.planned_minutes)}</strong>
               </div>
-            )
-          )}
+            ))}
 
-          {!sharedSessions.length && (
-            <p className="empty">
-              No shared study
-              sessions yet.
-            </p>
-          )}
-        </div>
-      </section>
+            {!sharedSessions.length && (
+              <p className="empty">No shared sessions created yet.</p>
+            )}
+          </div>
+        </section>
+      </div>
     </>
   )
 }
@@ -3497,246 +2334,114 @@ function AnalyticsView({
   weaknesses,
   chapters,
 }) {
-  const completedTasks =
-    tasks.filter(
-      (task) => task.completed
-    ).length
+  const completedTasks = tasks.filter(task => task.completed).length
 
-  const totalQuestions =
-    questionLogs.reduce(
-      (sum, log) =>
-        sum +
-        Number(
-          log.total_questions || 0
-        ),
-      0
-    )
+  const totalQuestions = questionLogs.reduce(
+    (sum, log) => sum + Number(log.total_questions || 0),
+    0
+  )
 
-  const totalCorrect =
-    questionLogs.reduce(
-      (sum, log) =>
-        sum +
-        Number(
-          log.correct_questions || 0
-        ),
-      0
-    )
+  const totalCorrect = questionLogs.reduce(
+    (sum, log) => sum + Number(log.correct_questions || 0),
+    0
+  )
 
-  const accuracy =
-    totalQuestions > 0
-      ? Math.round(
-          (totalCorrect /
-            totalQuestions) *
-            100
-        )
-      : 0
+  const accuracy = totalQuestions
+    ? Math.round((totalCorrect / totalQuestions) * 100)
+    : 0
 
-  const focusedMinutes =
-    studySessions.reduce(
-      (sum, item) =>
-        sum +
-        Number(
-          item.actual_minutes || 0
-        ),
-      0
-    )
+  const focusedMinutes = studySessions.reduce(
+    (sum, item) => sum + Number(item.actual_minutes || 0),
+    0
+  )
 
-  const redWeaknesses =
-    weaknesses.filter(
-      (item) =>
-        item.mastery_level === 'red'
-    ).length
+  const redWeaknesses = weaknesses.filter(
+    item => item.mastery_level === 'red'
+  ).length
 
-  const chapterCount =
-    chapters.filter(
-      (chapter) =>
-        chapter.status ===
-        'completed'
-    ).length
+  const chapterCount = chapters.filter(
+    chapter => chapter.status === 'completed'
+  ).length
 
   return (
-    <div className="analyticsGrid">
-      <MetricCard
-        label="QUESTIONS"
-        value={totalQuestions}
-        detail={`${accuracy}% overall accuracy`}
+    <>
+      <StudentHeader
+        name="Diya"
+        subtitle="Question Track Analytics"
+        badge="QUESTION FOCUSED"
       />
 
-      <MetricCard
-        label="FOCUSED TIME"
-        value={formatMinutes(
-          focusedMinutes
-        )}
-        detail="Pomodoro study time"
+      <div className="analyticsGrid">
+        <MetricCard
+          label="QUESTIONS"
+          value={totalQuestions}
+          detail={`${accuracy}% overall accuracy`}
+        />
+
+        <MetricCard
+          label="FOCUSED TIME"
+          value={formatMinutes(focusedMinutes)}
+          detail="Pomodoro study time"
+        />
+
+        <MetricCard
+          label="TASKS"
+          value={completedTasks}
+          detail="V2 tasks completed"
+        />
+
+        <MetricCard
+          label="RED WEAKNESSES"
+          value={redWeaknesses}
+          detail="need repair"
+        />
+
+        <MetricCard
+          label="FULL LENGTHS"
+          value={fullLengths.length}
+          detail={
+            fullLengths[0]
+              ? `Latest: ${fullLengths[0].total_score}`
+              : 'None logged'
+          }
+        />
+      </div>
+
+      <div className="studentDivider" />
+
+      <StudentHeader
+        name="Hamzah"
+        subtitle="Kaplan Content Analytics"
+        badge="CONTENT FOCUSED"
       />
 
-      <MetricCard
-        label="TASKS"
-        value={completedTasks}
-        detail="completed"
-      />
+      <div className="analyticsGrid">
+        <MetricCard
+          label="KAPLAN CHAPTERS"
+          value={`${chapterCount}/${chapters.length}`}
+          detail="chapters completed"
+        />
 
-      <MetricCard
-        label="RED WEAKNESSES"
-        value={redWeaknesses}
-        detail="need repair"
-      />
-
-      <MetricCard
-        label="KAPLAN"
-        value={`${chapterCount}/${chapters.length}`}
-        detail="chapters completed"
-      />
-
-      <MetricCard
-        label="FULL LENGTHS"
-        value={fullLengths.length}
-        detail={
-          fullLengths[0]
-            ? `Latest: ${fullLengths[0].total_score}`
-            : 'None logged'
-        }
-      />
-    </div>
+        <MetricCard
+          label="PROGRESS"
+          value={
+            chapters.length
+              ? `${Math.round((chapterCount / chapters.length) * 100)}%`
+              : '0%'
+          }
+          detail="content sequence"
+        />
+      </div>
+    </>
   )
 }
 
-function MetricCard({
-  label,
-  value,
-  detail,
-}) {
+function MetricCard({ label, value, detail }) {
   return (
     <section className="card statCard">
       <small>{label}</small>
       <b>{value}</b>
       <span>{detail}</span>
     </section>
-  )
-}
-
-function SettingsView({
-  preferences,
-  studyTrack,
-  countdown,
-  updateDisplayName,
-  changeStudyTrack,
-}) {
-  return (
-    <div className="settingsGrid">
-      <section className="card">
-        <div className="sectionTitle">
-          <div>
-            <small>PROFILE</small>
-            <h2>Study Profile</h2>
-          </div>
-        </div>
-
-        <form
-          className="form"
-          onSubmit={
-            updateDisplayName
-          }
-        >
-          <label>
-            Display name
-            <input
-              name="name"
-              defaultValue={
-                preferences?.display_name ||
-                ''
-              }
-              placeholder="Your name"
-            />
-          </label>
-
-          <button type="submit">
-            Save name
-          </button>
-        </form>
-      </section>
-
-      <section className="card">
-        <div className="sectionTitle">
-          <div>
-            <small>TRACK</small>
-            <h2>Study Style</h2>
-          </div>
-        </div>
-
-        <p>
-          Your account should use
-          Question Track. Your study
-          partner can choose Content
-          Track on their own account.
-        </p>
-
-        <div className="trackChoices">
-          <button
-            className={
-              studyTrack ===
-              'questions'
-                ? 'activeChoice'
-                : ''
-            }
-            onClick={() =>
-              changeStudyTrack(
-                'questions'
-              )
-            }
-          >
-            <b>Question Track</b>
-            <span>
-              Kaplan / UWorld / AAMC
-              + targeted repair
-            </span>
-          </button>
-
-          <button
-            className={
-              studyTrack ===
-              'content'
-                ? 'activeChoice'
-                : ''
-            }
-            onClick={() =>
-              changeStudyTrack(
-                'content'
-              )
-            }
-          >
-            <b>Content Track</b>
-            <span>
-              Kaplan chapters +
-              questions + recall
-            </span>
-          </button>
-        </div>
-      </section>
-
-      <section className="card">
-        <div className="sectionTitle">
-          <div>
-            <small>EXAM</small>
-            <h2>
-              January 21, 2027
-            </h2>
-          </div>
-        </div>
-
-        <div className="bigMetric">
-          <b>{countdown}</b>
-          <span>
-            days remaining
-          </span>
-        </div>
-
-        <p>
-          Target score:{' '}
-          {preferences?.target_score ||
-            512}+
-        </p>
-      </section>
-    </div>
   )
 }
