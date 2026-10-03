@@ -730,14 +730,16 @@ export default function Home() {
   async function processOverflow() {
     if (today >= EXAM_DATE) return
 
-    const { data: overdue, error } = await supabase
-      .from('daily_tasks')
-      .select('*')
-      .eq('user_id', uid)
-      .eq('completed', false)
-      .lt('task_date', today)
-      .neq('task_type', 'Exam')
-
+const { data: overdue, error } = await supabase
+  .from('daily_tasks')
+  .select('*')
+  .eq('user_id', uid)
+  .eq('completed', false)
+  .eq('source_type', 'v2_engine')
+  .gte('task_date', PLAN_START)
+  .lt('task_date', today)
+  .neq('task_type', 'Exam')
+    
     if (error) {
       throw error
     }
