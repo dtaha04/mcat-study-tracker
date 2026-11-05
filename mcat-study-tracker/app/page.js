@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { supabase } from '../lib/supabase'
 import schedule from '../data/schedule.json'
 
 const PLAN_START = schedule.plan_start || '2026-11-04'
@@ -43,7 +42,7 @@ function planFor(iso, student) {
   return student === 'Diya' ? d.diya : null
 }
 function sig(t) {
-  return [t.student_name||'',t.task_type||'',t.title||'',t.resource||'',t.subject||''].join('||')
+  return [t.student_name||'',t.task_type||'',t.sort_order||''].join('||')
 }
 function sumMin(ts=[]) { return ts.reduce((a,t)=>a+(Number(t.estimated_minutes)||0),0) }
 function progress(ts=[]) {
@@ -57,7 +56,7 @@ function weekDates(iso) {
 }
 
 /* Build expected tasks directly from schedule.json.
-   IMPORTANT: the UI uses these even before/if Supabase seeding occurs. */
+   The UI displays the plan even before any progress is saved. */
 function expectedTasks(iso, student) {
   const plan=planFor(iso,student)
   if(!plan || !Array.isArray(plan.tasks)) return []
@@ -80,179 +79,138 @@ function expectedTasks(iso, student) {
   return out
 }
 
-/* Merge schedule expectations with database state.
-   DB rows win, but missing DB rows still display from schedule.json. */
+/* Merge current schedule text with saved completion state. */
 function mergeExpected(expected, dbRows) {
   const bySig=new Map(dbRows.map(t=>[sig(t),t]))
-  const merged=expected.map(e=>bySig.get(sig(e)) || e)
+  const merged=expected.map(e=>{
+    const saved=bySig.get(sig(e))
+    return saved ? {...saved,title:e.title,description:e.description,resource:e.resource,subject:e.subject,estimated_minutes:e.estimated_minutes} : e
+  })
   const expectedSigs=new Set(expected.map(sig))
   dbRows.forEach(t=>{ if(!expectedSigs.has(sig(t))) merged.push(t) })
   return merged.sort((a,b)=>(Number(a.sort_order)||0)-(Number(b.sort_order)||0))
 }
 
+const STORAGE_KEY = 'diya-mcat-personal-v1'
+const emptyProgress = () => ({schemaVersion:1,tasks:[],questionLogs:[],fullLengths:[],studySessions:[]})
+function validateProgress(data) {
+  if(!data || data.schemaVersion!==1)throw new Error('Choose a backup exported by this tracker.')
+  const dateOK=x=>typeof x==='string' && /^\d{4}-\d{2}-\d{2}$/.test(x) && !Number.isNaN(fromISO(x).getTime()) && localISO(fromISO(x))===x
+  for(const key of ['tasks','questionLogs','fullLengths','studySessions']) {
+    if(!Array.isArray(data[key]) || data[key].some(x=>!x || typeof x!=='object' || typeof x.id!=='string'))throw new Error('Invalid backup records.')
+  }
+  if(data.tasks.some(x=>!dateOK(x.task_date)||typeof x.completed!=='boolean'||x.student_name!=='Diya'||!Number.isInteger(x.sort_order)))throw new Error('Invalid task data.')
+  if(data.questionLogs.some(x=>!dateOK(x.question_date)||!Number.isInteger(x.total_questions)||x.total_questions<1||!Number.isInteger(x.correct_questions)||x.correct_questions<0||x.correct_questions>x.total_questions))throw new Error('Invalid question data.')
+  if(data.fullLengths.some(x=>!dateOK(x.exam_date)||['cp_score','cars_score','bb_score','ps_score'].some(k=>!Number.isInteger(x[k])||x[k]<118||x[k]>132)||x.total_score!==x.cp_score+x.cars_score+x.bb_score+x.ps_score))throw new Error('Invalid exam data.')
+  if(data.studySessions.some(x=>!dateOK(x.session_date)||!Number.isFinite(x.actual_minutes)||x.actual_minutes<0))throw new Error('Invalid focus data.')
+  return {schemaVersion:1,tasks:data.tasks,questionLogs:data.questionLogs,fullLengths:data.fullLengths,studySessions:data.studySessions}
+}
+function mergeProgress(current,incoming) {
+  const next=emptyProgress()
+  for(const key of ['tasks','questionLogs','fullLengths','studySessions']) {
+    const recordKey=x=>key==='tasks' ? `${x.source_type}|${x.task_date}|${sig(x)}` : x.id
+    next[key]=[...new Map([...current[key],...incoming[key]].map(x=>[recordKey(x),x])).values()]
+  }
+  return next
+}
 export default function Home() {
-  const [session,setSession]=useState(null)
-  const [authLoading,setAuthLoading]=useState(true)
-  const [email,setEmail]=useState('')
-  const [password,setPassword]=useState('')
-  const [authMode,setAuthMode]=useState('signin')
   const [message,setMessage]=useState('')
   const [view,setView]=useState('Today')
-  const [selectedDate,setSelectedDate]=useState(localISO())
-  const [tasks,setTasks]=useState([])
-  const [questionLogs,setQuestionLogs]=useState([])
-  const [fullLengths,setFullLengths]=useState([])
-  const [studySessions,setStudySessions]=useState([])
+  const [selectedDate,setSelectedDate]=useState(PLAN_START)
+  const [data,setData]=useState(emptyProgress)
+  const dataRef=useRef(emptyProgress())
   const [loaded,setLoaded]=useState(false)
-  const [syncing,setSyncing]=useState(false)
-  const syncRef=useRef(false)
-  const uid=session?.user?.id || null
-
+  const [storageReady,setStorageReady]=useState(false)
+  const importRef=useRef(null)
   useEffect(()=>{
-    if(!supabase){setAuthLoading(false);return}
-    supabase.auth.getSession().then(({data})=>{setSession(data.session||null);setAuthLoading(false)})
-    const {data:{subscription}}=supabase.auth.onAuthStateChange((_e,s)=>setSession(s||null))
-    return ()=>subscription.unsubscribe()
-  },[])
-
-  async function auth(e) {
-    e.preventDefault(); setMessage('')
-    const r=authMode==='signup'
-      ? await supabase.auth.signUp({email,password})
-      : await supabase.auth.signInWithPassword({email,password})
-    if(r.error)setMessage(r.error.message)
-    else if(authMode==='signup')setMessage('Account created. Check email if confirmation is required.')
-  }
-
-  async function loadAll() {
-    if(!uid||!supabase)return []
-    const [a,b,c,d]=await Promise.all([
-      supabase.from('daily_tasks').select('*').eq('user_id',uid).order('task_date').order('sort_order'),
-      supabase.from('question_blocks').select('*').eq('user_id',uid).order('question_date',{ascending:false}),
-      supabase.from('full_length_scores').select('*').eq('user_id',uid).order('exam_date',{ascending:false}),
-      supabase.from('study_sessions').select('*').eq('user_id',uid).order('session_date',{ascending:false})
-    ])
-    if(a.error){console.error(a.error);setMessage(`Task load error: ${a.error.message}`)}
-    const rows=a.data||[]
-    setTasks(rows.filter(validPlanTask));setQuestionLogs((b.data||[]).filter(x=>isMyLog(x,'source')));setFullLengths((c.data||[]).filter(x=>isMyLog(x,'exam_name')));setStudySessions((d.data||[]).filter(x=>isMyLog(x,'session_type')));setLoaded(true)
-    return rows
-  }
-  useEffect(()=>{if(uid){setLoaded(false);loadAll()}},[uid])
-
-  async function syncDay(iso) {
-    if(!uid||!supabase||syncRef.current||iso<PLAN_START||iso>EXAM_DATE)return
-    if(!dayFor(iso)){setMessage(`No schedule entry for ${iso}.`);return}
-    syncRef.current=true;setSyncing(true)
+    setSelectedDate(localISO())
     try {
-      const {data:existing,error}=await supabase.from('daily_tasks').select('*')
-        .eq('user_id',uid).eq('task_date',iso)
-      if(error)throw error
-      const expected=expectedTasks(iso,'Diya')
-      const have=new Set((existing||[]).filter(validPlanTask).map(t=>`${t.source_type}||${sig(t)}`))
-      const seen=new Set(have)
-      const missing=expected.filter(t=>{
-        const k=`${t.source_type}||${sig(t)}`
-        if(seen.has(k))return false
-        seen.add(k);return true
-      }).map(({_virtual,_key,...t})=>({...t,user_id:uid}))
-      if(missing.length){const {error:e}=await supabase.from('daily_tasks').insert(missing);if(e)throw e}
-      if(missing.length)await loadAll()
-    } catch(e){console.error('[MCAT sync]',e);setMessage(`Save warning: ${e?.message||'Unknown error'}. Planned tasks remain visible.`)}
-    finally{syncRef.current=false;setSyncing(false)}
+      const stored=localStorage.getItem(STORAGE_KEY)
+      const initial=stored ? validateProgress(JSON.parse(stored)) : emptyProgress()
+      dataRef.current=initial;setData(initial);setStorageReady(true)
+    } catch(e){setMessage('Browser progress could not be read. Existing data was left unchanged. Use a valid backup or restore browser storage access.')}
+    setLoaded(true)
+  },[])
+  function save(next, restoring=false) {
+    if(!storageReady&&!restoring){setMessage('Saving is unavailable because browser storage could not be read.');return false}
+    try {localStorage.setItem(STORAGE_KEY,JSON.stringify(next));dataRef.current=next;setData(next);setStorageReady(true);setMessage('');return true}
+    catch(e){setMessage('Progress was not saved. Browser storage may be blocked or full. Export a backup before changing browser settings.');return false}
   }
-  useEffect(()=>{if(uid&&loaded)syncDay(selectedDate)},[uid,loaded,selectedDate])
-
-  const dbDay=(student,iso)=>tasks.filter(t=>validPlanTask(t)&&t.student_name===student&&t.task_date===iso)
-  const displayTasks=(student,iso)=>mergeExpected(expectedTasks(iso,student),dbDay(student,iso))
-  const diyaTasks=displayTasks('Diya',selectedDate)
-
+  const tasks=data.tasks.filter(validPlanTask)
+  const questionLogs=data.questionLogs.filter(x=>isMyLog(x,'source')).slice().sort((a,b)=>b.question_date.localeCompare(a.question_date))
+  const fullLengths=data.fullLengths.filter(x=>isMyLog(x,'exam_name')).slice().sort((a,b)=>b.exam_date.localeCompare(a.exam_date))
+  const studySessions=data.studySessions.filter(x=>isMyLog(x,'session_type')).slice().sort((a,b)=>b.session_date.localeCompare(a.session_date))
+  const diyaTasks=mergeExpected(expectedTasks(selectedDate,'Diya'),tasks.filter(t=>t.task_date===selectedDate))
   function overflowFor(student,iso) {
-    // Do not silently add overdue tasks every day. Carryover is explicit and version-scoped.
-    return tasks.filter(t=>validPlanTask(t)&&t.student_name===student&&!t.completed&&t.carried_forward&&t.current_due_date===iso&&t.task_date<iso&&t.task_type!=='Chapter')
+    return tasks.filter(t=>t.student_name===student&&!t.completed&&t.carried_forward&&t.current_due_date===iso&&t.task_date<iso)
   }
-
-  async function toggleTask(task) {
-    if(!uid||!supabase)return
-    const next=!task.completed
-    if(task._virtual || !task.id) {
-      const {_virtual,_key,...row}=task
-      const {data,error}=await supabase.from('daily_tasks').insert({
-        ...row,user_id:uid,completed:next,completed_at:next?new Date().toISOString():null,status:next?'completed':'scheduled'
-      }).select().single()
-      if(error){setMessage(`Could not save task: ${error.message}`);return}
-    } else {
-      const {error}=await supabase.from('daily_tasks').update({
-        completed:next,completed_at:next?new Date().toISOString():null,
-        status:next?'completed':(task.carried_forward?'overdue':'scheduled')
-      }).eq('id',task.id).eq('user_id',uid)
-      if(error){setMessage(error.message);return}
-    }
-    await loadAll()
+  function toggleTask(task) {
+    const current=dataRef.current,next=!task.completed
+    const {_virtual,_key,...fields}=task
+    const row={...fields,id:task.id||crypto.randomUUID(),completed:next,completed_at:next?new Date().toISOString():null,status:next?'completed':'scheduled'}
+    const others=current.tasks.filter(t=>!(t.source_type===row.source_type&&t.task_date===row.task_date&&sig(t)===sig(row)))
+    save({...current,tasks:[...others,row]})
   }
-
-  async function addQuestionBlock(x) {
-    const {error}=await supabase.from('question_blocks').insert({
-      user_id:uid,question_date:x.date,source:`${x.student} — ${x.source}`,subject:x.subject,
-      total_questions:Number(x.total),correct_questions:Number(x.correct),timed:Boolean(x.timed)
-    })
-    if(error)setMessage(error.message);else await loadAll()
+  function addQuestionBlock(x) {
+    const total=Number(x.total),correct=Number(x.correct)
+    if(!Number.isInteger(total)||total<1||!Number.isInteger(correct)||correct<0||correct>total){setMessage('Correct answers must be between zero and the total questions.');return}
+    const row={id:crypto.randomUUID(),question_date:x.date,source:`Diya — ${x.source}`,subject:x.subject,total_questions:total,correct_questions:correct,timed:Boolean(x.timed)}
+    const current=dataRef.current;save({...current,questionLogs:[row,...current.questionLogs]})
   }
-  async function addFL(x) {
-    const {error}=await supabase.from('full_length_scores').insert({
-      user_id:uid,exam_date:x.date,exam_name:`${x.student} — ${x.name}`,
-      cp_score:Number(x.cp),cars_score:Number(x.cars),bb_score:Number(x.bb),ps_score:Number(x.ps),
-      total_score:Number(x.cp)+Number(x.cars)+Number(x.bb)+Number(x.ps)
-    })
-    if(error)setMessage(error.message);else await loadAll()
+  function addFL(x) {
+    const scores=[x.cp,x.cars,x.bb,x.ps].map(Number)
+    if(scores.some(n=>!Number.isInteger(n)||n<118||n>132)){setMessage('Each section score must be between 118 and 132.');return}
+    const row={id:crypto.randomUUID(),exam_date:x.date,exam_name:`Diya — ${x.name}`,cp_score:scores[0],cars_score:scores[1],bb_score:scores[2],ps_score:scores[3],total_score:scores.reduce((a,b)=>a+b,0)}
+    const current=dataRef.current;save({...current,fullLengths:[row,...current.fullLengths]})
   }
-  async function logSession(student,minutes,type='Focus') {
-    const {error}=await supabase.from('study_sessions').insert({
-      user_id:uid,session_date:localISO(),actual_minutes:Number(minutes),planned_minutes:Number(minutes),
-      session_type:`${student} — ${type}`,ended_at:new Date().toISOString()
-    })
-    if(error)setMessage(error.message);else await loadAll()
+  function logSession(student,minutes,type='Focus') {
+    const row={id:crypto.randomUUID(),session_date:localISO(),actual_minutes:Number(minutes),planned_minutes:Number(minutes),session_type:`Diya — ${type}`,ended_at:new Date().toISOString()}
+    const current=dataRef.current;save({...current,studySessions:[row,...current.studySessions]})
   }
-
-  if(authLoading)return <div className="auth"><div className="card authCard"><h1>MCAT Study Tracker</h1><p>Loading...</p></div></div>
-  if(!session)return <div className="auth"><form className="card authCard" onSubmit={auth}>
-    <div className="logo"><span>M</span><div><b>MCAT TRACKER</b><small>JANUARY 21, 2027</small></div></div>
-    <h1>{authMode==='signin'?'Welcome back':'Create account'}</h1>
-    <p>Diya MCAT Study System</p>
-    <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} required/>
-    <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} required/>
-    <button type="submit">{authMode==='signin'?'Sign In':'Create Account'}</button>
-    <button type="button" className="secondary" onClick={()=>setAuthMode(authMode==='signin'?'signup':'signin')}>
-      {authMode==='signin'?'Need an account?':'Already have an account?'}
-    </button>
-    {message&&<div className="message">{message}</div>}
-  </form></div>
-
+  function exportBackup() {
+    const url=URL.createObjectURL(new Blob([JSON.stringify(dataRef.current,null,2)],{type:'application/json'}))
+    const a=document.createElement('a');a.href=url;a.download=`MCAT-progress-${localISO()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)
+  }
+  async function importBackup(event) {
+    const file=event.target.files?.[0];event.target.value='';if(!file)return
+    try {
+      if(file.size>10*1024*1024)throw new Error('Backup is too large.')
+      const incoming=validateProgress(JSON.parse(await file.text()))
+      if(save(mergeProgress(dataRef.current,incoming),true))setMessage('Backup imported. Matching records use the backup version; other records are kept.')
+    } catch(e){setMessage(`Import failed: ${e.message}. Current progress was not changed.`)}
+  }
+  if(!loaded)return <div className="card"><p>Loading your personal tracker...</p></div>
   const daysLeft=Math.max(0,daysBetween(localISO(),EXAM_DATE))
   return <div className="shell">
     <aside className="aside">
       <div className="logo"><span>M</span><div><b>MCAT TRACKER</b><small>NOV 4 RESET</small></div></div>
       <div className="profileMini"><small>PERSONAL PLAN</small><b>Diya</b><span>Target: 510+</span></div>
-      <nav>{['Today','Calendar','Questions','Full Lengths','Study Plan','Analytics'].map(x=>
+      <nav>{['Today','Calendar','Questions','Full Lengths','Study Plan','Reference','Analytics'].map(x=>
         <button key={x} className={view===x?'active':''} onClick={()=>setView(x)}>{x}</button>)}</nav>
       <div className="sideExam"><small>MCAT</small><b>{daysLeft}</b><span>days remaining</span></div>
-      <button className="secondary" onClick={()=>supabase.auth.signOut()}>Sign Out</button>
+      <p style={{fontSize:12}}>Saved on this browser. Export a backup before switching devices or clearing browser data.</p>
+      <button className="secondary" onClick={exportBackup}>Export Progress</button>
+      <button className="secondary" onClick={()=>importRef.current?.click()}>Import Progress</button>
+      <input ref={importRef} type="file" accept=".json,application/json" style={{display:'none'}} onChange={importBackup}/>
+      <p style={{fontSize:12}}>Import merges a tracker backup; matching records use the imported version.</p>
     </aside>
     <main className="content">
       <header className="header"><div><h1>{view}</h1><p>Diya • MCAT January 21, 2027</p></div>
         <div className="headerRight"><div className="countdown"><b>{daysLeft}</b><span>DAYS TO MCAT</span></div></div></header>
       {message&&<div className="message">{message}</div>}
       {view==='Today'&&<Today selectedDate={selectedDate} setSelectedDate={setSelectedDate}
-        diya={diyaTasks} diyaOverflow={overflowFor('Diya',selectedDate)} allTasks={tasks} toggle={toggleTask} logSession={logSession} syncing={syncing}/>}
+        diya={diyaTasks} diyaOverflow={overflowFor('Diya',selectedDate)} allTasks={tasks} toggle={toggleTask} logSession={logSession}/>}
       {view==='Calendar'&&<Calendar tasks={tasks} selectedDate={selectedDate} choose={d=>{setSelectedDate(d);setView('Today')}}/>}
       {view==='Questions'&&<Questions logs={questionLogs} add={addQuestionBlock}/>}
       {view==='Full Lengths'&&<FullLengths rows={fullLengths} add={addFL}/>}
       {view==='Study Plan'&&<StudyPlan sessions={studySessions}/>}
+      {view==='Reference'&&<ReferenceLibrary/>}
       {view==='Analytics'&&<Analytics tasks={tasks} q={questionLogs} fl={fullLengths} sessions={studySessions}/>}
     </main>
   </div>
 }
 
-function Today({selectedDate,setSelectedDate,diya,diyaOverflow,allTasks,toggle,logSession,syncing}) {
+function Today({selectedDate,setSelectedDate,diya,diyaOverflow,allTasks,toggle,logSession}) {
   const week=weekDates(selectedDate), day=dayFor(selectedDate)
   return <>
     <div className="card weekSummary"><div className="weekTitle"><div><small>STUDY WEEK</small><h2>{formatDate(week[0])} – {formatDate(week[6],false,true)}</h2></div></div>
@@ -266,11 +224,37 @@ function Today({selectedDate,setSelectedDate,diya,diyaOverflow,allTasks,toggle,l
           onClick={()=>setSelectedDate(d)}><small>{fromISO(d).toLocaleDateString('en-US',{weekday:'short'})}</small><b>{fromISO(d).getDate()}</b>
           <span>{shown.filter(x=>x.completed).length}/{shown.length}</span></button>})}</div>
     </div>
-    {syncing&&<div className="message">Syncing schedule with database...</div>}
     {!day&&<div className="message">No schedule entry for this date.</div>}
+    <VideoPlan plan={day?.diya}/>
     <StudentHeader name="Diya" subtitle="Question-Heavy Track • 510+ Target" badge={fmtMin(day?.diya?.target_minutes||sumMin(diya))}/>
     <Dashboard student="Diya" date={selectedDate} plan={day?.diya} tasks={diya} overflow={diyaOverflow} toggle={toggle} logSession={logSession}/>
   </>
+}
+function ResourceLinks({items=[]}) {
+  return <ul>{items.map((v,i)=><li key={i} style={{marginBottom:8}}><a href={v.url} target="_blank" rel="noopener noreferrer" style={{color:'#60a5fa'}}>{v.title}</a><small style={{display:'block'}}>Search exact title on Khan Academy</small></li>)}</ul>
+}
+function VideoPlan({plan}) {
+  if(!plan)return null
+  const p=plan.pankow
+  return <>
+    {p&&<section className="card" style={{marginBottom:20}}><h2>MrPankow: {p.topic}</h2><p><b>{p.new_card_limit ? `Up to ${p.new_card_limit} new cards` : 'Due reviews only'} · {p.minutes} minutes within your Anki block</b></p><p>{p.action}</p><p>{p.rule}</p>
+      {!!p.optional_videos?.length&&<details><summary>Optional videos if these cards are unclear</summary><ResourceLinks items={p.optional_videos}/></details>}
+    </section>}
+    <section className="card" style={{marginBottom:20}}><h2>Optional video references</h2><p>Skip concepts you can explain and apply. C/P gets priority. Use saved viewing time for questions or error review; these are not extra checklist items.</p>
+    {plan.watch?.length ? plan.watch.map((v,i)=><div key={i} style={{padding:'16px 0',borderTop:'1px solid #334155'}}>
+      <small>{v.subject} · up to {v.minutes} minutes within the existing block</small><h3>{v.sections.join(' → ')}</h3>
+      <ResourceLinks items={v.videos}/><p>{v.instructions}</p>{v.source_note&&<p>{v.source_note}</p>}<small>Included in: {v.within_task}</small>
+    </div>) : <p>{plan.video_note}</p>}</section>
+  </>
+}
+function ReferenceLibrary() {
+  const [query,setQuery]=useState(''),[kind,setKind]=useState('All')
+  const entries=(schedule.reference_library||[]).filter(x=>(kind==='All'||x.kind===kind)&&`${x.title} ${x.unit}`.toLowerCase().includes(query.toLowerCase()))
+  return <section className="card"><h2>Your Khan Academy reference list</h2><p>Optional lookup only. This is not an additional study checklist. Search links use the exact title. Some supplied entries are headings or articles; their type is marked conservatively.</p>
+    <input aria-label="Search reference list" placeholder="Search a topic or title" value={query} onChange={e=>setQuery(e.target.value)}/>
+    <select aria-label="Resource type" value={kind} onChange={e=>setKind(e.target.value)}>{['All',...new Set((schedule.reference_library||[]).map(x=>x.kind))].map(x=><option key={x}>{x}</option>)}</select>
+    <p>{entries.length} matching entries</p>{entries.map((x,i)=><div className="logRow" key={i}><div><small>{x.kind} · {x.unit}</small><a href={x.url} target="_blank" rel="noopener noreferrer" style={{color:'#60a5fa'}}>{x.title}</a></div></div>)}
+  </section>
 }
 function StudentHeader({name,subtitle,badge}) {
   return <div className="studentHeader"><div><small>STUDENT</small><h2>{name}</h2><p>{subtitle}</p></div><strong>{badge}</strong></div>
@@ -294,7 +278,7 @@ function Overflow({student,rows,toggle}) {
 }
 function Task({x,toggle,overflow=false}) {
   return <div className={['task',x.completed?'completed':'',overflow?'overflowTask':''].filter(Boolean).join(' ')}>
-    <button className={`taskCheck ${x.completed?'done':''}`} onClick={()=>toggle(x)}>{x.completed?'✓':''}</button>
+    <button className={`taskCheck ${x.completed?'done':''}`} aria-label={`${x.completed?'Uncheck':'Complete'} ${x.title}`} onClick={()=>toggle(x)}>{x.completed?'✓':''}</button>
     <div className="taskBody"><small>{overflow?`OVERFLOW • ${x.task_type}`:x.task_type}</small><b>{x.title}</b>{x.description&&<span>{x.description}</span>}
       <span>{Number(x.estimated_minutes)>0?fmtMin(x.estimated_minutes):''}{x.resource?`${Number(x.estimated_minutes)>0?' • ':''}${x.resource}`:''}</span></div></div>
 }
@@ -304,18 +288,25 @@ function Progress({p,done,total,mins}) {
 }
 function Pomodoro({student,log}) {
   const [focus,setFocus]=useState(50),[brk,setBrk]=useState(10),[mode,setMode]=useState('Focus'),[seconds,setSeconds]=useState(3000),[running,setRunning]=useState(false)
-  const ref=useRef(null)
-  useEffect(()=>{if(!running)setSeconds((mode==='Focus'?focus:brk)*60)},[mode,focus,brk,running])
+  const ref=useRef(null), logRef=useRef(log), finished=useRef(false)
+  useEffect(()=>{logRef.current=log},[log])
+  useEffect(()=>{setRunning(false);setSeconds((mode==='Focus'?focus:brk)*60);finished.current=false},[mode,focus,brk])
   useEffect(()=>{
-    if(!running){clearInterval(ref.current);return}
-    ref.current=setInterval(()=>setSeconds(s=>{if(s<=1){clearInterval(ref.current);setRunning(false);if(mode==='Focus')log(student,focus,'Pomodoro');return 0}return s-1}),1000)
+    if(!running)return
+    ref.current=setInterval(()=>setSeconds(s=>Math.max(0,s-1)),1000)
     return()=>clearInterval(ref.current)
-  },[running,mode,focus,student])
+  },[running])
+  useEffect(()=>{
+    if(running&&seconds===0&&!finished.current){
+      finished.current=true;setRunning(false)
+      if(mode==='Focus')logRef.current(student,focus,'Pomodoro')
+    }
+  },[seconds,running,mode,student,focus])
   const mm=String(Math.floor(seconds/60)).padStart(2,'0'),ss=String(seconds%60).padStart(2,'0')
   return <div className="card pomodoro"><div className="sectionTitle"><div><small>{student.toUpperCase()}</small><h2>Pomodoro</h2></div><span>{mode}</span></div><div className="timer">{mm}:{ss}</div>
     <div className="timerModes"><button onClick={()=>{setRunning(false);setMode('Focus')}}>Focus</button><button onClick={()=>{setRunning(false);setMode('Break')}}>Break</button></div>
     <div className="timerInputs"><label>Focus<input type="number" min="1" value={focus} onChange={e=>setFocus(Number(e.target.value)||1)}/></label><label>Break<input type="number" min="1" value={brk} onChange={e=>setBrk(Number(e.target.value)||1)}/></label></div>
-    <button className="timerButton" onClick={()=>setRunning(x=>!x)}>{running?'Pause':'Start'}</button></div>
+    <button className="timerButton" onClick={()=>{if(seconds===0){setSeconds((mode==='Focus'?focus:brk)*60);finished.current=false}setRunning(x=>!x)}}>{running?'Pause':'Start'}</button></div>
 }
 function Calendar({tasks,selectedDate,choose}) {
   const [off,setOff]=useState(0), base=fromISO(selectedDate), m=new Date(base.getFullYear(),base.getMonth()+off,1), y=m.getFullYear(),mi=m.getMonth()
@@ -323,7 +314,7 @@ function Calendar({tasks,selectedDate,choose}) {
   return <div className="card"><div className="sectionTitle"><div><small>STUDY CALENDAR</small><h2>{m.toLocaleDateString('en-US',{month:'long',year:'numeric'})}</h2></div>
     <div><button className="secondary" onClick={()=>setOff(x=>x-1)}>←</button> <button className="secondary" onClick={()=>setOff(x=>x+1)}>→</button></div></div>
     <div className="calendarGrid">{dates.map(d=>{const e=expectedTasks(d,'Diya').filter(x=>x.task_type!=='Chapter'),db=tasks.filter(x=>x.task_date===d&&validPlanTask(x)),x=mergeExpected(e,db)
-      return <button key={d} className={d===localISO()?'current':''} onClick={()=>choose(d)}><small>{fromISO(d).toLocaleDateString('en-US',{weekday:'short'})}</small><b>{fromISO(d).getDate()}</b><span>{x.filter(t=>t.completed).length}/{x.length}</span></button>})}</div></div>
+      return <button key={d} className={d===localISO()?'current':''} onClick={()=>choose(d)}><small>{fromISO(d).toLocaleDateString('en-US',{weekday:'short'})}</small><b>{fromISO(d).getDate()}</b><span>{x.filter(t=>t.completed).length}/{x.length}</span><small style={{display:'block',whiteSpace:'normal',fontSize:11}}>MrPankow: {dayFor(d)?.diya?.pankow?.topic || '—'}</small>{dayFor(d)?.diya?.watch?.map((v,i)=><small key={i} style={{display:'block',whiteSpace:'normal',fontSize:11,marginTop:4}}>{v.subject}: {v.sections.join(' / ')}</small>)}</button>})}</div></div>
 }
 function Questions({logs,add}) {
   const student='Diya'
@@ -331,7 +322,7 @@ function Questions({logs,add}) {
   return <div className="dashboardGrid"><form className="card form" onSubmit={e=>{e.preventDefault();add({student,date,source,subject,total,correct,timed})}}>
     <div className="sectionTitle"><div><small>QUESTION LOG</small><h2>Add Practice Block</h2></div></div>
 
-    <label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
+    <label>Date<input type="date" required value={date} onChange={e=>setDate(e.target.value)}/></label>
     <label>Resource<input value={source} onChange={e=>setSource(e.target.value)}/></label><label>Section<input value={subject} onChange={e=>setSubject(e.target.value)}/></label>
     <label>Questions<input type="number" min="1" value={total} onChange={e=>setTotal(e.target.value)}/></label><label>Correct<input type="number" min="0" value={correct} onChange={e=>setCorrect(e.target.value)}/></label>
     <label className="checkboxLabel"><input type="checkbox" checked={timed} onChange={e=>setTimed(e.target.checked)}/>Timed</label><button type="submit">Save Question Block</button></form>
@@ -343,7 +334,7 @@ function FullLengths({rows,add}) {
   const [date,setDate]=useState(localISO()),[name,setName]=useState('AAMC FL'),[cp,setCp]=useState(125),[cars,setCars]=useState(125),[bb,setBb]=useState(125),[ps,setPs]=useState(125)
   return <div className="dashboardGrid"><form className="card form" onSubmit={e=>{e.preventDefault();add({student,date,name,cp,cars,bb,ps})}}>
     <div className="sectionTitle"><div><small>FULL LENGTH</small><h2>Log Score</h2></div></div>
-<label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
+<label>Date<input type="date" required value={date} onChange={e=>setDate(e.target.value)}/></label>
     <label>Exam<input value={name} onChange={e=>setName(e.target.value)}/></label>
     {[['C/P',cp,setCp],['CARS',cars,setCars],['B/B',bb,setBb],['P/S',ps,setPs]].map(([l,v,s])=><label key={l}>{l}<input type="number" min="118" max="132" value={v} onChange={e=>s(e.target.value)}/></label>)}
     <button type="submit">Save Full Length</button></form>
@@ -356,13 +347,14 @@ function StudyPlan({sessions}) {
       <p>C/P gets priority. Regular days contain 5.5 focused hours, plus breaks. Full-length days take about 7.5 hours; the final two days taper.</p>
       {(schedule.phases||[]).map(p=><div className="logRow" key={p.start}><div><small>{formatDate(p.start)} – {formatDate(p.end)}</small><b>{p.name}</b><p>{p.details}</p></div></div>)}
     </div>
+    <div className="card"><h2>MrPankow Setup and Daily Rules</h2>{(schedule.pankow_guide||[]).map((r,i)=><p key={i}>{i+1}. {r}</p>)}</div>
     <div className="card"><h2>How to Use Each Study Day</h2>{(schedule.study_rules||[]).map((rule,i)=><p key={rule}><b>{i+1}.</b> {rule}</p>)}</div>
     <div className="dashboardGrid"><div className="card"><h2>Scheduled Full Lengths</h2>{exams.map((d,i)=><div className="logRow" key={d.date}><div><small>FULL LENGTH {i+1}</small><b>{formatDate(d.date,true,true)}</b><p>{d.diya.tasks[0].resource}</p><span>Dedicated review the following day.</span></div></div>)}</div>
     <div className="card"><h2>Recent Focus Sessions</h2>{sessions.slice(0,20).map(x=><div className="logRow" key={x.id}><div><small>{formatDate(x.session_date)}</small><b>{x.session_type}</b></div><strong>{fmtMin(x.actual_minutes)}</strong></div>)}</div></div>
   </>
 }
 function Analytics({tasks,q,fl,sessions}) {
-  const d=tasks.filter(x=>validPlanTask(x)&&x.student_name==='Diya'&&x.task_type!=='Chapter')
+  const d=DAYS.filter(day=>day.date<=localISO()).flatMap(day=>mergeExpected(expectedTasks(day.date,'Diya'),tasks.filter(x=>validPlanTask(x)&&x.task_date===day.date))).filter(x=>x.task_type!=='Chapter')
   const tq=q.reduce((a,x)=>a+(Number(x.total_questions)||0),0),cq=q.reduce((a,x)=>a+(Number(x.correct_questions)||0),0),fm=sessions.reduce((a,x)=>a+(Number(x.actual_minutes)||0),0)
   return <div className="analyticsGrid"><Metric l="DIYA COMPLETION" v={d.length?`${Math.round(d.filter(x=>x.completed).length/d.length*100)}%`:'0%'} s={`${d.filter(x=>x.completed).length}/${d.length} tasks`}/>
     <Metric l="QUESTIONS LOGGED" v={tq} s={`${tq?Math.round(cq/tq*100):0}% accuracy`}/>
