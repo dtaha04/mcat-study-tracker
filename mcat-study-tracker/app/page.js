@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { supabase } from '../lib/supabase'
 import schedule from '../data/schedule.json'
 
 const PLAN_START = schedule.plan_start || '2026-11-04'
@@ -105,12 +106,31 @@ function validateProgress(data) {
   if(data.studySessions.some(x=>!dateOK(x.session_date)||!Number.isFinite(x.actual_minutes)||x.actual_minutes<0))throw new Error('Invalid focus data.')
   return {schemaVersion:1,tasks:data.tasks,questionLogs:data.questionLogs,fullLengths:data.fullLengths,studySessions:data.studySessions}
 }
-function mergeProgress(current,incoming) {
+const TABLES={tasks:'daily_tasks',questionLogs:'question_blocks',fullLengths:'full_length_scores',studySessions:'study_sessions'}
+const FIELDS={
+  tasks:'student_name task_date current_due_date task_type title description resource subject estimated_minutes priority sort_order completed source_type status carried_forward carry_count completed_at',
+  questionLogs:'question_date source subject total_questions correct_questions timed',
+  fullLengths:'exam_date exam_name cp_score cars_score bb_score ps_score total_score',
+  studySessions:'session_date actual_minutes planned_minutes session_type ended_at'
+}
+function cloudRow(key,row,uid,id=row.id) {
+  return Object.fromEntries([['id',id],['user_id',uid],...FIELDS[key].split(' ').filter(k=>row[k]!==undefined).map(k=>[k,row[k]])])
+}
+async function taskId(uid,row) {
+  const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${uid}|${row.source_type}|${row.task_date}|${sig(row)}`))
+  const h=Array.from(new Uint8Array(bytes)).map(b=>b.toString(16).padStart(2,'0')).join('')
+  return `${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`
+}
+async function readCloud(uid) {
   const next=emptyProgress()
-  for(const key of ['tasks','questionLogs','fullLengths','studySessions']) {
-    const recordKey=x=>key==='tasks' ? `${x.source_type}|${x.task_date}|${sig(x)}` : x.id
-    next[key]=[...new Map([...current[key],...incoming[key]].map(x=>[recordKey(x),x])).values()]
-  }
+  await Promise.all(Object.entries(TABLES).map(async([key,table])=>{
+    // Paginate: a full plan and its history can exceed Supabase's default row limit.
+    for(let start=0;;start+=500){
+      const {data,error}=await supabase.from(table).select('*').eq('user_id',uid).order('id').range(start,start+499)
+      if(error)throw error
+      next[key].push(...(data||[]));if(!data||data.length<500)break
+    }
+  }))
   return next
 }
 export default function Home() {
@@ -120,21 +140,94 @@ export default function Home() {
   const [data,setData]=useState(emptyProgress)
   const dataRef=useRef(emptyProgress())
   const [loaded,setLoaded]=useState(false)
-  const [storageReady,setStorageReady]=useState(false)
+  const [session,setSession]=useState(null),[authLoading,setAuthLoading]=useState(true)
+  const [email,setEmail]=useState(''),[password,setPassword]=useState('')
+  const [syncStatus,setSyncStatus]=useState('Connecting…')
+  const [busy,setBusy]=useState(false),[hasLocal,setHasLocal]=useState(false)
+  const lock=useRef(false),generation=useRef(0),uidRef=useRef(null)
+  const uid=session?.user?.id
   const importRef=useRef(null)
   useEffect(()=>{
     setSelectedDate(localISO())
-    try {
-      const stored=localStorage.getItem(STORAGE_KEY)
-      const initial=stored ? validateProgress(JSON.parse(stored)) : emptyProgress()
-      dataRef.current=initial;setData(initial);setStorageReady(true)
-    } catch(e){setMessage('Browser progress could not be read. Existing data was left unchanged. Use a valid backup or restore browser storage access.')}
-    setLoaded(true)
+    try {setHasLocal(Boolean(localStorage.getItem(STORAGE_KEY)))}catch{}
+    if(!supabase){setMessage('Supabase is not configured. Restore your existing lib/supabase.js and environment variables.');setAuthLoading(false);return}
+    let active=true,changed=false
+    const accept=s=>{if(!active)return;uidRef.current=s?.user?.id||null;setSession(s);setAuthLoading(false)}
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((_event,s)=>{changed=true;accept(s)})
+    supabase.auth.getSession().then(({data,error})=>{
+      if(!active)return
+      if(error)setMessage(error.message)
+      if(!changed)accept(data?.session||null)
+    }).catch(e=>{if(active){setMessage(e.message);setAuthLoading(false)}})
+    return()=>{active=false;subscription.unsubscribe()}
   },[])
-  function save(next, restoring=false) {
-    if(!storageReady&&!restoring){setMessage('Saving is unavailable because browser storage could not be read.');return false}
-    try {localStorage.setItem(STORAGE_KEY,JSON.stringify(next));dataRef.current=next;setData(next);setStorageReady(true);setMessage('');return true}
-    catch(e){setMessage('Progress was not saved. Browser storage may be blocked or full. Export a backup before changing browser settings.');return false}
+  function applyCloud(next){dataRef.current=next;setData(next);setLoaded(true);setSyncStatus('Synced')}
+  async function refresh(){
+    if(!uid||lock.current)return
+    const request=++generation.current
+    try {const next=await readCloud(uid);if(request===generation.current&&uidRef.current===uid)applyCloud(next)}
+    catch(e){if(request===generation.current){setSyncStatus('Sync failed');setMessage(`Could not refresh: ${e.message}. Your cloud data has not been cleared.`)}}
+  }
+  useEffect(()=>{
+    ++generation.current;setLoaded(false);dataRef.current=emptyProgress();setData(emptyProgress())
+    if(!uid)return
+    refresh()
+    const timer=setInterval(()=>{if(document.visibilityState==='visible')refresh()},15000)
+    const focus=()=>refresh()
+    window.addEventListener('focus',focus);window.addEventListener('online',focus)
+    return()=>{++generation.current;clearInterval(timer);window.removeEventListener('focus',focus);window.removeEventListener('online',focus)}
+  },[uid])
+  async function auth(e){
+    e.preventDefault();if(!supabase)return;setMessage('')
+    try {const {error}=await supabase.auth.signInWithPassword({email,password});if(error)throw error;setPassword('')}
+    catch(e){setMessage(e.message)}
+  }
+  async function save(next){
+    if(!uid||!loaded||lock.current){setMessage('Wait for syncing to finish before saving.');return false}
+    lock.current=true;setBusy(true);++generation.current;setSyncStatus('Saving…');setMessage('')
+    const before=dataRef.current
+    try {
+      for(const [key,table] of Object.entries(TABLES)){
+        const old=new Map(before[key].map(r=>[r.id,r]))
+        for(const row of next[key]){
+          if(JSON.stringify(old.get(row.id))===JSON.stringify(row))continue
+          if(uidRef.current!==uid)throw new Error('Account changed; sign in again.')
+          const existing=key==='tasks'?before.tasks.find(t=>t.source_type===row.source_type&&t.task_date===row.task_date&&sig(t)===sig(row)):old.get(row.id)
+          const id=existing?.id||(key==='tasks'?await taskId(uid,row):row.id)
+          const payload=cloudRow(key,row,uid,id)
+          const query=existing?supabase.from(table).update(payload).eq('user_id',uid).eq('id',id):supabase.from(table).upsert(payload,{onConflict:'id'})
+          const {data:written,error}=await query.select('id')
+          if(error)throw error
+          if(!written?.length)throw new Error('Save was not authorized by the database.')
+        }
+      }
+      const latest=await readCloud(uid)
+      if(uidRef.current!==uid)return false
+      applyCloud(latest);return true
+    }catch(e){
+      setSyncStatus('Save not confirmed');setMessage(`Save not confirmed: ${e.message}. Refresh to check cloud progress before retrying. Your browser-only backup is unchanged.`)
+      return false
+    }finally{lock.current=false;setBusy(false)}
+  }
+  async function uploadProgress(incoming){
+    if(!uid||!loaded||lock.current)return
+    // Keep cloud records on conflicts; import only missing records. Repeated imports are safe.
+    lock.current=true;setBusy(true);++generation.current
+    let current
+    try {current=await readCloud(uid)} finally {lock.current=false;setBusy(false)}
+    if(uidRef.current!==uid)return
+    const next=emptyProgress()
+    for(const key of Object.keys(TABLES)){
+      const keyFor=r=>key==='tasks'?`${r.source_type}|${r.task_date}|${sig(r)}`:r.id
+      const seen=new Set(current[key].map(keyFor))
+      next[key]=[...current[key],...incoming[key].filter(r=>!seen.has(keyFor(r)))]
+    }
+    dataRef.current=current;setData(current)
+    if(await save(next))setMessage('Progress uploaded. Existing cloud records were kept. The original browser backup remains available.')
+  }
+  async function uploadLocal(){
+    try {await uploadProgress(validateProgress(JSON.parse(localStorage.getItem(STORAGE_KEY))))}
+    catch(e){setMessage(`Could not upload browser progress: ${e.message}`)}
   }
   const tasks=data.tasks.filter(validPlanTask)
   const questionLogs=data.questionLogs.filter(x=>isMyLog(x,'source')).slice().sort((a,b)=>b.question_date.localeCompare(a.question_date))
@@ -176,10 +269,16 @@ export default function Home() {
     try {
       if(file.size>10*1024*1024)throw new Error('Backup is too large.')
       const incoming=validateProgress(JSON.parse(await file.text()))
-      if(save(mergeProgress(dataRef.current,incoming),true))setMessage('Backup imported. Matching records use the backup version; other records are kept.')
-    } catch(e){setMessage(`Import failed: ${e.message}. Current progress was not changed.`)}
+      await uploadProgress(incoming)
+    } catch(e){setMessage(`Import failed: ${e.message}. The backup file was not changed.`)}
   }
-  if(!loaded)return <div className="card"><p>Loading your personal tracker...</p></div>
+  if(authLoading)return <div className="card"><p>Restoring your session…</p></div>
+  if(!session)return <div className="auth"><form className="card authCard" onSubmit={auth}>
+    <h1>Connect your synced tracker</h1><p>Use your existing account on each device. Your session is remembered so you do not need to sign in every visit.</p>
+    <label>Email<input type="email" autoComplete="username" required value={email} onChange={e=>setEmail(e.target.value)}/></label>
+    <label>Password<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label>
+    <button disabled={!supabase}>Sign in and sync</button>{message&&<p role="alert">{message}</p>}
+  </form></div>
   const daysLeft=Math.max(0,daysBetween(localISO(),EXAM_DATE))
   return <div className="shell">
     <aside className="aside">
@@ -188,16 +287,20 @@ export default function Home() {
       <nav>{['Today','Calendar','Questions','Full Lengths','Study Plan','Reference','Analytics'].map(x=>
         <button key={x} className={view===x?'active':''} onClick={()=>setView(x)}>{x}</button>)}</nav>
       <div className="sideExam"><small>MCAT</small><b>{daysLeft}</b><span>days remaining</span></div>
-      <p style={{fontSize:12}}>Saved on this browser. Export a backup before switching devices or clearing browser data.</p>
-      <button className="secondary" onClick={exportBackup}>Export Progress</button>
-      <button className="secondary" onClick={()=>importRef.current?.click()}>Import Progress</button>
+      <p role="status">{syncStatus} · {session.user.email}</p>
+      <button className="secondary" disabled={busy} onClick={refresh}>Refresh sync</button>
+      {hasLocal&&<button className="secondary" disabled={busy||!loaded} onClick={uploadLocal}>Upload browser progress</button>}
+      <button className="secondary" disabled={busy} onClick={async()=>{const {error}=await supabase.auth.signOut({scope:'local'});if(error)setMessage(error.message)}}>Sign out on this device</button>
+      <button className="secondary" disabled={!loaded||busy} onClick={exportBackup}>Export Progress</button>
+      <button className="secondary" disabled={!loaded||busy} onClick={()=>importRef.current?.click()}>Import Progress</button>
       <input ref={importRef} type="file" accept=".json,application/json" style={{display:'none'}} onChange={importBackup}/>
-      <p style={{fontSize:12}}>Import merges a tracker backup; matching records use the imported version.</p>
+      <p style={{fontSize:12}}>Imports add missing records and keep existing cloud progress. Browser-only progress is never deleted.</p>
     </aside>
     <main className="content">
       <header className="header"><div><h1>{view}</h1><p>Diya • MCAT January 21, 2027</p></div>
         <div className="headerRight"><div className="countdown"><b>{daysLeft}</b><span>DAYS TO MCAT</span></div></div></header>
       {message&&<div className="message">{message}</div>}
+      <fieldset disabled={busy||!loaded} style={{border:0,padding:0,margin:0,minWidth:0}}>
       {view==='Today'&&<Today selectedDate={selectedDate} setSelectedDate={setSelectedDate}
         diya={diyaTasks} diyaOverflow={overflowFor('Diya',selectedDate)} allTasks={tasks} toggle={toggleTask} logSession={logSession}/>}
       {view==='Calendar'&&<Calendar tasks={tasks} selectedDate={selectedDate} choose={d=>{setSelectedDate(d);setView('Today')}}/>}
@@ -206,6 +309,7 @@ export default function Home() {
       {view==='Study Plan'&&<StudyPlan sessions={studySessions}/>}
       {view==='Reference'&&<ReferenceLibrary/>}
       {view==='Analytics'&&<Analytics tasks={tasks} q={questionLogs} fl={fullLengths} sessions={studySessions}/>}
+      </fieldset>
     </main>
   </div>
 }
